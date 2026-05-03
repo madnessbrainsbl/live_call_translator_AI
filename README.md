@@ -9,6 +9,9 @@ Windows-first live call translator with an AI assistant. The app listens to both
 
 The current project logic is centered on Windows, VB-CABLE A+B, a Rust audio engine, an Elixir supervisor, and a Flask control UI.
 
+![Uploading 32.jpg…]()
+
+
 ## What It Does
 
 - Two-way live call translation: your speech -> their language, their speech -> your language.
