@@ -1,0 +1,53 @@
+# Elixir
+/_build/
+/cover/
+/deps/
+/doc/
+/tmp/
+/.tmp/
+erl_crash.dump
+*.dump
+*.log
+*.ez
+translator-*.tar
+
+# Rust
+/native/audio_engine/target/
+
+# Models (large, downloaded separately)
+/models/
+
+# OS
+.DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example
+settings.json
+
+# Python
+/.venv/
+__pycache__/
+/.local/
+
+# Runtime
+test-log.txt
+/tts-output/
+calls.db
+/voices-catalog.json
+
+# Downloaded native runtime
+/vendor/onnxruntime/
+/vendor/onnxruntime-win-x64/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docs (dev only)
+article.md
+LAUNCH_PLAN.md
+HANDOFF.md

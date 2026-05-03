@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Translator</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20260502-5') }}">
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="overlay">
+  <div class="spinner" id="spinner"></div>
+  <p id="overlay-text">Loading engine...</p>
+</div>
+
+<!-- Settings backdrop -->
+<div class="sp-backdrop" id="sp-backdrop" onclick="closeSettings()"></div>
+
+<!-- Settings panel -->
+<div class="sp" id="sp">
+  <div class="sp-head">
+    <h2>Settings</h2>
+    <button class="sp-close" onclick="closeSettings()">&times;</button>
+  </div>
+  <div class="sp-body">
+    <form autocomplete="off" onsubmit="return false">
+
+    <!-- API Keys -->
+    <div class="sp-section" id="sec-keys">
+      <div class="sp-section-head" onclick="toggleSection('sec-keys')">
+        <span>API Keys</span>
+        <span class="chev">&#9662;</span>
+      </div>
+      <div class="sp-section-body">
+        <div class="sp-field">
+          <div class="sp-label">Deepgram API Key <span class="badge">STT</span></div>
+          <div class="sp-input-row">
+            <input class="sp-input sp-key" id="cfg-deepgram" type="text" placeholder="Enter Deepgram key..." autocomplete="one-time-code" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other">
+            <button class="sp-test-btn" id="test-deepgram" onclick="testKey('deepgram')">Test</button>
+          </div>
+          <div class="sp-hint">Used for speech-to-text. Get a key at console.deepgram.com</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">Groq API Key <span class="badge">Translation</span></div>
+          <div class="sp-input-row">
+            <input class="sp-input sp-key" id="cfg-groq" type="text" placeholder="Enter Groq key..." autocomplete="one-time-code" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other">
+            <button class="sp-test-btn" id="test-groq" onclick="testKey('groq')">Test</button>
+          </div>
+          <div class="sp-hint">Used for translation via LLM. Get a key at console.groq.com</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">AI Assistant Provider <span class="badge">primary</span></div>
+          <select class="sp-input" id="cfg-ai-provider">
+            <option value="codex">ChatGPT / Codex</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="groq">Groq</option>
+            <option value="auto">Auto fallback</option>
+          </select>
+          <div class="sp-hint">Choose exactly who answers in the AI Assistant. Auto fallback tries Codex, OpenRouter, then Groq.</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">ChatGPT / Codex Login <span class="badge">AI Assistant</span></div>
+          <div class="sp-input-row">
+            <label class="sp-check-row">
+              <input id="cfg-codex-enabled" type="checkbox">
+              <span>Use local Codex login first</span>
+            </label>
+            <button class="sp-test-btn" id="test-codex" onclick="testKey('codex')">Test</button>
+          </div>
+          <div class="sp-hint">Uses the local Codex CLI OAuth login. If needed, run codex login in PowerShell.</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">Codex Model <span class="badge">optional</span></div>
+          <input class="sp-input" id="cfg-codex-model" type="text" spellcheck="false" placeholder="gpt-5.4">
+          <div class="sp-hint">Default is gpt-5.4 for ChatGPT login. Use gpt-5.4-mini for faster live answers.</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">OpenRouter API Key <span class="badge">AI Assistant</span></div>
+          <div class="sp-input-row">
+            <input class="sp-input sp-key" id="cfg-openrouter" type="text" placeholder="Enter OpenRouter key..." autocomplete="one-time-code" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other">
+            <button class="sp-test-btn" id="test-openrouter" onclick="testKey('openrouter')">Test</button>
+          </div>
+          <div class="sp-hint">Used for the AI interview assistant.</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">OpenRouter Model <span class="badge">AI Assistant</span></div>
+          <input class="sp-input" id="cfg-openrouter-model" type="text" spellcheck="false" value="openrouter/auto">
+          <div class="sp-hint">Use openrouter/auto or any exact OpenRouter model id.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Languages -->
+    <div class="sp-section" id="sec-lang">
+      <div class="sp-section-head" onclick="toggleSection('sec-lang')">
+        <span>Languages</span>
+        <span class="chev">&#9662;</span>
+      </div>
+      <div class="sp-section-body">
+        <div class="sp-field">
+          <div class="sp-label">My Language <span class="badge">I speak</span></div>
+          <select class="sp-input" id="cfg-my-lang">
+            <option value="ru">Russian</option>
+            <option value="en">English</option>
+            <option value="ar">Arabic</option>
+            <option value="ca">Catalan</option>
+            <option value="cs">Czech</option>
+            <option value="da">Danish</option>
+            <option value="de">German</option>
+            <option value="el">Greek</option>
+            <option value="es">Spanish</option>
+            <option value="fa">Persian</option>
+            <option value="fi">Finnish</option>
+            <option value="fr">French</option>
+            <option value="hi">Hindi</option>
+            <option value="hu">Hungarian</option>
+            <option value="id">Indonesian</option>
+            <option value="it">Italian</option>
+            <option value="lv">Latvian</option>
+            <option value="nl">Dutch</option>
+            <option value="no">Norwegian</option>
+            <option value="pl">Polish</option>
+            <option value="pt">Portuguese</option>
+            <option value="ro">Romanian</option>
+            <option value="sv">Swedish</option>
+            <option value="tr">Turkish</option>
+            <option value="uk">Ukrainian</option>
+            <option value="vi">Vietnamese</option>
+            <option value="zh">Chinese</option>
+          </select>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">Their Language <span class="badge">they speak</span></div>
+          <select class="sp-input" id="cfg-their-lang">
+            <option value="en">English</option>
+            <option value="ru">Russian</option>
+            <option value="ar">Arabic</option>
+            <option value="ca">Catalan</option>
+            <option value="cs">Czech</option>
+            <option value="da">Danish</option>
+            <option value="de">German</option>
+            <option value="el">Greek</option>
+            <option value="es">Spanish</option>
+            <option value="fa">Persian</option>
+            <option value="fi">Finnish</option>
+            <option value="fr">French</option>
+            <option value="hi">Hindi</option>
+            <option value="hu">Hungarian</option>
+            <option value="id">Indonesian</option>
+            <option value="it">Italian</option>
+            <option value="lv">Latvian</option>
+            <option value="nl">Dutch</option>
+            <option value="no">Norwegian</option>
+            <option value="pl">Polish</option>
+            <option value="pt">Portuguese</option>
+            <option value="ro">Romanian</option>
+            <option value="sv">Swedish</option>
+            <option value="tr">Turkish</option>
+            <option value="uk">Ukrainian</option>
+            <option value="vi">Vietnamese</option>
+            <option value="zh">Chinese</option>
+          </select>
+          <div class="sp-hint">Select a language, then download additional voices from the Voice section below.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Voice -->
+    <div class="sp-section" id="sec-voice">
+      <div class="sp-section-head" onclick="toggleSection('sec-voice')">
+        <span>Voice</span>
+        <span class="chev">&#9662;</span>
+      </div>
+      <div class="sp-section-body">
+        <div class="sp-field">
+          <div class="sp-label">TTS Engine <span class="badge">speech</span></div>
+          <select class="sp-input" id="cfg-tts-provider">
+            <option value="piper">Piper local voices</option>
+            <option value="edge">Microsoft Edge Neural voices</option>
+          </select>
+          <div class="sp-hint">Edge mode uses Microsoft neural voices online and falls back to Piper when you switch back.</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label" id="voice-label-in">My Voice (incoming TTS)</div>
+          <div class="sp-input-row">
+            <select class="sp-input" id="cfg-voice-in"></select>
+            <button class="sp-dl-btn hidden" id="dl-voice-in" onclick="downloadSelectedVoice('in')" title="Download voice"><span class="dl-icon">&#8615;</span><span class="dl-spin"></span></button>
+            <button class="sp-preview-btn" id="preview-in" onclick="previewVoice('in')" title="Preview"><span class="preview-icon">&#9654;</span><span class="preview-spin"></span></button>
+          </div>
+          <div class="sp-hint" id="voice-hint-in"></div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label" id="voice-label-out">Their Voice (outgoing TTS)</div>
+          <div class="sp-input-row">
+            <select class="sp-input" id="cfg-voice-out"></select>
+            <button class="sp-dl-btn hidden" id="dl-voice-out" onclick="downloadSelectedVoice('out')" title="Download voice"><span class="dl-icon">&#8615;</span><span class="dl-spin"></span></button>
+            <button class="sp-preview-btn" id="preview-out" onclick="previewVoice('out')" title="Preview"><span class="preview-icon">&#9654;</span><span class="preview-spin"></span></button>
+          </div>
+          <div class="sp-hint" id="voice-hint-out"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Audio Devices -->
+    <div class="sp-section" id="sec-audio">
+      <div class="sp-section-head" onclick="toggleSection('sec-audio')">
+        <span>Audio Devices</span>
+        <span class="chev">&#9662;</span>
+      </div>
+      <div class="sp-section-body">
+        <div class="sp-field">
+          <div class="sp-label">Microphone</div>
+          <select class="sp-input" id="cfg-mic"></select>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">Speakers</div>
+          <select class="sp-input" id="cfg-speaker"></select>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">Call Microphone Playback Target</div>
+          <select class="sp-input" id="cfg-call-input" title="Playback device where translated outgoing speech is sent for your call app microphone"></select>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">Speaker/System Capture Source</div>
+          <select class="sp-input" id="cfg-call-output" title="Input or virtual loopback device carrying the other side or system audio into the translator"></select>
+        </div>
+        <div class="sp-hint" style="margin-top:8px">For calls on Windows: app Speakers = CABLE-A Input, app Microphone = CABLE-B Output.</div>
+      </div>
+    </div>
+
+    <!-- Advanced -->
+    <div class="sp-section" id="sec-advanced">
+      <div class="sp-section-head" onclick="toggleSection('sec-advanced')">
+        <span>Advanced</span>
+        <span class="chev">&#9662;</span>
+      </div>
+      <div class="sp-section-body">
+        <div class="sp-field">
+          <div class="sp-label">STT Endpointing (sentence boundary sensitivity)</div>
+          <div class="sp-slider-wrap">
+            <input type="range" class="sp-slider" id="cfg-endpointing" min="500" max="1500" step="50" value="700">
+            <span class="sp-slider-val" id="endpointing-val">700ms</span>
+          </div>
+          <div class="sp-hint">Lower = faster response, may cut sentences. Higher = waits longer for complete sentences.</div>
+        </div>
+      </div>
+    </div>
+
+    </form>
+  </div>
+
+  <!-- Footer with restart button -->
+  <div class="sp-footer">
+    <button class="restart-btn" id="restart-btn" onclick="saveAndRestart()">
+      <span class="ring"></span>
+      <span class="progress-bar" id="restart-progress"></span>
+      <span class="restart-text" id="restart-text">Save &amp; Restart Engine</span>
+    </button>
+  </div>
+</div>
+
+<!-- Main UI -->
+<header>
+  <h1>Live Translator</h1>
+  <div class="header-controls">
+    <span id="timer">0:00</span>
+    <div class="engine-pill stopped" id="engine-pill">
+      <span class="engine-dot"></span>
+      <span id="engine-label">Stopped</span>
+    </div>
+    <div id="status">Connected</div>
+    <button class="icon-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle theme"></button>
+  </div>
+</header>
+
+<div class="controls">
+  <button class="btn btn-engine stopped" id="btn-engine" onclick="toggleEngine()">
+    <span class="engine-icon" id="engine-icon">&#9654;</span>
+    <span id="engine-toggle-text">Start</span>
+  </button>
+  <div class="btn-sep"></div>
+  <button class="btn active" id="btn-mic-out" onclick="toggleMute('outgoing')" aria-disabled="false">
+    <span class="dot"></span> <span id="mic-out-label">Mic Out</span>
+  </button>
+  <button class="btn active" id="btn-mic-in" onclick="toggleMute('incoming')">
+    <span class="dot"></span> <span id="mic-in-label">Mic In</span>
+  </button>
+  <div class="btn-sep"></div>
+  <button class="btn btn-icon" id="btn-monitor" onclick="toggleMonitor()" title="Capture browser audio and play translations in browser">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 011-1h4l2 2h4a1 1 0 011 1v7a1 1 0 01-1 1H3a1 1 0 01-1-1V3z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6.5 7v3l2.5-1.5L6.5 7z"/></svg>
+    Monitor
+  </button>
+  <button class="btn btn-icon btn-text-only" id="btn-text-only" onclick="toggleTextOnly()" title="Disable translated speech output; keep text only" aria-pressed="false">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2h2.2L8 3.6v8.8L4.7 9.8H2.5z"/><path d="M11.2 6.2l2.6 2.6M13.8 6.2l-2.6 2.6"/></svg>
+    <span id="text-only-label">Text Only</span>
+  </button>
+  <button class="btn btn-icon btn-ai" id="btn-suggestions" onclick="toggleSuggestions()" title="Suggest replies from the current transcript">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.8l.9 2.7 2.8.2-2.2 1.7.7 2.8L8 7.7 5.8 9.2l.7-2.8-2.2-1.7 2.8-.2L8 1.8z"/><path d="M3.5 11.5h9M5 14h6"/></svg>
+    AI Assistant
+  </button>
+  <div class="btn-sep"></div>
+  <button class="btn btn-icon" id="btn-bookmarks" onclick="toggleBookmarkFilter()" title="Bookmarks">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2h8v12l-4-2.5L4 14V2z"/></svg>
+    Saved
+  </button>
+  <span class="spacer"></span>
+  <a href="/history" class="btn btn-icon" id="btn-history" title="Call history">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>
+    History
+  </a>
+  <button class="btn btn-icon" id="btn-export" onclick="exportChat()" title="Export transcript">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v8M5 7l3 3 3-3M3 12h10"/></svg>
+    Export
+  </button>
+  <button class="btn btn-icon" id="btn-clear" onclick="clearAll()" title="Clear chat">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5h8l-.5 8.5a1 1 0 01-1 .5H5.5a1 1 0 01-1-.5L4 5zM3 4h10M6 4V2.5h4V4"/></svg>
+    Clear
+  </button>
+  <div class="btn-sep"></div>
+  <button class="btn btn-icon btn-settings-main" id="btn-settings" onclick="openSettings()" title="Settings">
+    <svg class="gear-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="3"/><path d="M10 1.5v3M10 15.5v3M1.5 10h3M15.5 10h3M4.1 4.1l2.1 2.1M13.8 13.8l2.1 2.1M4.1 15.9l2.1-2.1M13.8 6.2l2.1-2.1"/></svg>
+    Settings
+  </button>
+</div>
+
+<div class="chat" id="chat">
+  <div class="typing" id="typing">
+    <div class="typing-dot"></div>
+    <div class="typing-dot"></div>
+    <div class="typing-dot"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<footer>
+  <span>STT: <b id="avg-stt">-</b></span>
+  <span>Translate: <b id="avg-trl">-</b></span>
+  <span>TTS: <b id="avg-tts">-</b></span>
+  <span>Latency: <b id="avg-lat">-</b></span>
+  <span>Phrases: <b id="total">0</b></span>
+</footer>
+
+<script src="{{ url_for('static', filename='js/tooltips.js', v='20260502-1') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js', v='20260503-1') }}"></script>
+</body>
+</html>

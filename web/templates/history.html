@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call History</title>
+<style>
+  :root[data-theme="dark"] {
+    --bg: #0a0a0a; --bg2: #111; --bg3: #0d0d0d; --bg4: #161616;
+    --border: #222; --border2: #333; --border3: #444;
+    --text: #e0e0e0; --text2: #888; --text3: #555; --text-h: #fff;
+    --btn-bg: #1a1a1a; --btn-hover: #252525;
+    --bubble-out: #1a3050; --bubble-in: #2d1a2e; --bubble-text: #fff;
+    --green: #4ade80; --blue: #60a5fa; --pink: #f472b6; --yellow: #facc15;
+    --red: #f87171; --overlay: #0a0a0aee;
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f5f5; --bg2: #fff; --bg3: #fafafa; --bg4: #f0f0f0;
+    --border: #e0e0e0; --border2: #ccc; --border3: #bbb;
+    --text: #1a1a1a; --text2: #666; --text3: #999; --text-h: #000;
+    --btn-bg: #fff; --btn-hover: #f0f0f0;
+    --bubble-out: #d4e4ff; --bubble-in: #f3d4f8; --bubble-text: #1a1a1a;
+    --green: #16a34a; --blue: #2563eb; --pink: #db2777; --yellow: #ca8a04;
+    --red: #dc2626; --overlay: #f5f5f5ee;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    padding: 10px 20px; background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  header h1 { font-size: 17px; font-weight: 600; color: var(--text-h); }
+  .header-controls { display: flex; gap: 10px; align-items: center; }
+  a.btn, button.btn {
+    padding: 6px 14px; border-radius: 8px; font-size: 13px;
+    background: var(--btn-bg); color: var(--text); border: 1px solid var(--border2);
+    cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+  }
+  a.btn:hover, button.btn:hover { background: var(--btn-hover); }
+  .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+
+  /* Call list */
+  .call-card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px; margin-bottom: 12px;
+    cursor: pointer; transition: border-color 0.2s;
+  }
+  .call-card:hover { border-color: var(--border3); }
+  .call-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .call-date { font-size: 14px; font-weight: 600; color: var(--text-h); }
+  .call-langs { font-size: 12px; color: var(--text2); background: var(--bg4); padding: 2px 8px; border-radius: 6px; }
+  .call-meta { font-size: 12px; color: var(--text3); }
+  .call-summary { font-size: 13px; color: var(--text2); margin-top: 8px; line-height: 1.5; }
+
+  /* Call detail */
+  .detail-panel { display: none; }
+  .detail-panel.active { display: block; }
+  .back-bar { margin-bottom: 16px; display: flex; gap: 10px; align-items: center; }
+  .continue-btn { border-color: var(--green); color: var(--green); }
+  .continue-btn:hover { background: var(--green); color: var(--bg); }
+  .utterance {
+    padding: 10px 14px; margin-bottom: 6px; border-radius: 10px;
+    max-width: 85%;
+  }
+  .utterance.me { background: var(--bubble-out); margin-left: auto; }
+  .utterance.them { background: var(--bubble-in); }
+  .utt-original { font-size: 13px; color: var(--text2); margin-bottom: 4px; }
+  .utt-translated { font-size: 14px; color: var(--bubble-text); }
+  .utt-time { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+  .summary-box {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+    font-size: 13px; line-height: 1.6; color: var(--text);
+    white-space: pre-wrap;
+  }
+  .empty { text-align: center; color: var(--text3); padding: 60px 20px; font-size: 14px; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border3);
+    border-top-color: var(--blue); border-radius: 50%; animation: spin 0.6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .danger { color: var(--red); border-color: var(--red); }
+  .danger:hover { background: var(--red); color: #fff; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Call History</h1>
+  <div class="header-controls">
+    <button class="btn danger" onclick="clearAllHistory()">Clear All</button>
+    <a href="/" class="btn">&#8592; Live</a>
+    <button class="btn" onclick="toggleTheme()">&#9788;</button>
+  </div>
+</header>
+
+<div class="container">
+  <!-- List view -->
+  <div id="list-view" class="detail-panel active">
+    <div id="call-list"></div>
+    <div id="empty-msg" class="empty" style="display:none">No calls recorded yet</div>
+  </div>
+
+  <!-- Detail view -->
+  <div id="detail-view" class="detail-panel">
+    <div class="back-bar">
+      <button class="btn" onclick="showList()">&#8592; Back</button>
+      <button class="btn continue-btn" id="btn-continue" onclick="continueCall()">&#9654; Continue</button>
+      <button class="btn" id="btn-summary" onclick="genSummary()">&#9733; Summary</button>
+      <button class="btn danger" id="btn-delete" onclick="deleteCall()">&#10005; Delete</button>
+    </div>
+    <div id="summary-container"></div>
+    <div id="utterances"></div>
+  </div>
+</div>
+
+<script>
+let currentCallId = null;
+
+function getTheme() { return localStorage.getItem('translator-theme') || 'dark'; }
+function applyTheme(t) { document.documentElement.setAttribute('data-theme', t); }
+function toggleTheme() {
+  const t = getTheme() === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('translator-theme', t); applyTheme(t);
+}
+applyTheme(getTheme());
+
+async function loadCalls() {
+  const resp = await fetch('/api/calls');
+  const calls = await resp.json();
+  const list = document.getElementById('call-list');
+  const empty = document.getElementById('empty-msg');
+  list.innerHTML = '';
+  if (!calls.length) { empty.style.display = ''; return; }
+  empty.style.display = 'none';
+  calls.forEach(c => {
+    const card = document.createElement('div');
+    card.className = 'call-card';
+    card.onclick = () => showDetail(c.id);
+    const langs = (c.my_language || '??').toUpperCase() + ' \u2194 ' + (c.their_language || '??').toUpperCase();
+    const ended = c.ended_at ? ' \u2014 ' + c.ended_at.slice(11, 16) : ' (active)';
+    card.innerHTML =
+      '<div class="call-header">' +
+        '<span class="call-date">' + c.started_at.slice(0, 16).replace('T', ' ') + ended + '</span>' +
+        '<span class="call-langs">' + langs + '</span>' +
+      '</div>' +
+      '<div class="call-meta">' + c.utterance_count + ' messages</div>' +
+      (c.summary ? '<div class="call-summary">' + c.summary.slice(0, 150) + (c.summary.length > 150 ? '...' : '') + '</div>' : '');
+    list.appendChild(card);
+  });
+}
+
+async function showDetail(id) {
+  currentCallId = id;
+  document.getElementById('list-view').classList.remove('active');
+  document.getElementById('detail-view').classList.add('active');
+
+  const resp = await fetch('/api/calls/' + id);
+  const data = await resp.json();
+  const call = data.call;
+  const utts = data.utterances;
+
+  const sc = document.getElementById('summary-container');
+  sc.innerHTML = call.summary ? '<div class="summary-box">' + escHtml(call.summary) + '</div>' : '';
+
+  const container = document.getElementById('utterances');
+  container.innerHTML = '';
+  utts.forEach(u => {
+    const div = document.createElement('div');
+    div.className = 'utterance ' + u.speaker;
+    div.innerHTML =
+      '<div class="utt-original">' + escHtml(u.original) + '</div>' +
+      '<div class="utt-translated">' + escHtml(u.translated) + '</div>' +
+      '<div class="utt-time">' + u.ts.slice(11, 19) + '</div>';
+    container.appendChild(div);
+  });
+}
+
+function showList() {
+  document.getElementById('detail-view').classList.remove('active');
+  document.getElementById('list-view').classList.add('active');
+  currentCallId = null;
+  loadCalls();
+}
+
+async function genSummary() {
+  if (!currentCallId) return;
+  const btn = document.getElementById('btn-summary');
+  btn.innerHTML = '<span class="spinner"></span> Generating...';
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/calls/' + currentCallId + '/summary', { method: 'POST' });
+    const data = await resp.json();
+    if (data.summary) {
+      document.getElementById('summary-container').innerHTML =
+        '<div class="summary-box">' + escHtml(data.summary) + '</div>';
+    } else {
+      alert(data.error || 'Failed to generate summary');
+    }
+  } catch (e) { alert('Error: ' + e); }
+  btn.innerHTML = '&#9733; Summary';
+  btn.disabled = false;
+}
+
+async function continueCall() {
+  if (!currentCallId) return;
+  const btn = document.getElementById('btn-continue');
+  btn.disabled = true;
+  btn.textContent = 'Opening...';
+  try {
+    const resp = await fetch('/api/calls/' + currentCallId + '/resume', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || 'Failed to resume call');
+    window.location.href = '/?resume_call=' + encodeURIComponent(currentCallId) + '&autostart=1';
+  } catch (e) {
+    alert(e.message || 'Failed to resume call');
+    btn.disabled = false;
+    btn.innerHTML = '&#9654; Continue';
+  }
+}
+
+async function deleteCall() {
+  if (!currentCallId || !confirm('Delete this call?')) return;
+  await fetch('/api/calls/' + currentCallId, { method: 'DELETE' });
+  showList();
+}
+
+async function clearAllHistory() {
+  if (!confirm('Delete all call history?')) return;
+  await fetch('/api/calls/clear', { method: 'POST' });
+  document.getElementById('detail-view').classList.remove('active');
+  document.getElementById('list-view').classList.add('active');
+  currentCallId = null;
+  await loadCalls();
+}
+
+function escHtml(s) {
+  const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+}
+
+loadCalls();
+</script>
+</body>
+</html>
