@@ -9,7 +9,9 @@ Windows-first live call translator with an AI assistant. The app listens to both
 
 The current project logic is centered on Windows, VB-CABLE A+B, a Rust audio engine, an Elixir supervisor, and a Flask control UI.
 
-![Uploading 32.jpg…]()
+<img width="2559" height="1235" alt="32" src="https://github.com/user-attachments/assets/7d756610-c949-453d-8626-4ba5fe971e7c" />
+
+
 
 
 ## What It Does
