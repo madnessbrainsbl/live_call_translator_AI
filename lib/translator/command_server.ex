@@ -55,6 +55,14 @@ defmodule Translator.CommandServer do
     "ok"
   end
 
+  defp handle_command("start_monitor_outgoing") do
+    Translator.AudioEngine.start_pipelines(["incoming"], %{
+      "meet_input_device" => "__system_output_loopback__"
+    })
+
+    "ok"
+  end
+
   defp handle_command("start_incoming") do
     Translator.AudioEngine.start_pipelines(["incoming"])
     "ok"
@@ -95,6 +103,16 @@ defmodule Translator.CommandServer do
     "ok"
   end
 
+  defp handle_command("translation_off") do
+    Translator.AudioEngine.set_config(:translation_enabled, false)
+    "ok"
+  end
+
+  defp handle_command("translation_on") do
+    Translator.AudioEngine.set_config(:translation_enabled, true)
+    "ok"
+  end
+
   defp handle_command("monitor_audio_on") do
     Translator.AudioEngine.set_config(:browser_monitor_enabled, true)
     "ok"
@@ -109,11 +127,13 @@ defmodule Translator.CommandServer do
     case String.split(rest, ":", parts: 2) do
       [lang, voice] ->
         debug_log("▶ Preview command: lang=#{lang} voice=#{voice}")
+
         Translator.AudioEngine.send_command(%{
           "cmd" => "tts_preview",
           "lang" => lang,
           "voice" => voice
         })
+
         "ok:previewing"
 
       _ ->

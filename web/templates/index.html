@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Live Translator</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20260502-5') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20260510-1') }}">
 </head>
 <body>
 
@@ -16,6 +16,27 @@
 
 <!-- Settings backdrop -->
 <div class="sp-backdrop" id="sp-backdrop" onclick="closeSettings()"></div>
+
+<!-- AI prompt context editor -->
+<div class="prompt-backdrop" id="prompt-backdrop" onclick="closePromptEditor()"></div>
+<div class="prompt-panel" id="prompt-panel" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+  <div class="prompt-head">
+    <h2 id="prompt-title">res</h2>
+    <button class="prompt-close" onclick="closePromptEditor()" aria-label="Close">&times;</button>
+  </div>
+  <div class="prompt-body">
+    <div class="prompt-actions">
+      <button class="prompt-file-btn" id="prompt-file-btn" onclick="triggerPromptFile()">Load .txt/.md</button>
+      <input id="prompt-file" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden onchange="loadPromptFile(event)">
+      <span class="prompt-count" id="prompt-count">0</span>
+    </div>
+    <textarea class="prompt-text" id="prompt-text" spellcheck="true"></textarea>
+  </div>
+  <div class="prompt-footer">
+    <button class="prompt-secondary" onclick="clearPromptEditor()">Clear</button>
+    <button class="prompt-primary" onclick="savePromptEditor()">Save</button>
+  </div>
+</div>
 
 <!-- Settings panel -->
 <div class="sp" id="sp">
@@ -67,8 +88,9 @@
               <span>Use local Codex login first</span>
             </label>
             <button class="sp-test-btn" id="test-codex" onclick="testKey('codex')">Test</button>
+            <button class="sp-test-btn" id="codex-switch" onclick="switchCodexAccount()">Switch</button>
           </div>
-          <div class="sp-hint">Uses the local Codex CLI OAuth login. If needed, run codex login in PowerShell.</div>
+          <div class="sp-hint">Uses the local Codex CLI OAuth login. Switch opens Codex device login in a new PowerShell window.</div>
         </div>
         <div class="sp-field">
           <div class="sp-label">Codex Model <span class="badge">optional</span></div>
@@ -289,16 +311,21 @@
   <div class="btn-sep"></div>
   <button class="btn btn-icon" id="btn-monitor" onclick="toggleMonitor()" title="Capture browser audio and play translations in browser">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 011-1h4l2 2h4a1 1 0 011 1v7a1 1 0 01-1 1H3a1 1 0 01-1-1V3z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6.5 7v3l2.5-1.5L6.5 7z"/></svg>
-    Monitor
+    <span id="monitor-label">Monitor</span>
   </button>
   <button class="btn btn-icon btn-text-only" id="btn-text-only" onclick="toggleTextOnly()" title="Disable translated speech output; keep text only" aria-pressed="false">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2h2.2L8 3.6v8.8L4.7 9.8H2.5z"/><path d="M11.2 6.2l2.6 2.6M13.8 6.2l-2.6 2.6"/></svg>
     <span id="text-only-label">Text Only</span>
   </button>
+  <button class="btn btn-icon btn-transcript-only" id="btn-transcript-only" onclick="toggleTranscriptOnly()" title="Disable translation; show original speaker text only" aria-pressed="false">
+    T
+  </button>
   <button class="btn btn-icon btn-ai" id="btn-suggestions" onclick="toggleSuggestions()" title="Suggest replies from the current transcript">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.8l.9 2.7 2.8.2-2.2 1.7.7 2.8L8 7.7 5.8 9.2l.7-2.8-2.2-1.7 2.8-.2L8 1.8z"/><path d="M3.5 11.5h9M5 14h6"/></svg>
     AI Assistant
   </button>
+  <button class="btn btn-icon btn-prompt" id="btn-res" onclick="openPromptEditor('res')" title="Resume prompt">res</button>
+  <button class="btn btn-icon btn-prompt" id="btn-vac" onclick="openPromptEditor('vac')" title="Vacancy prompt">vac</button>
   <div class="btn-sep"></div>
   <button class="btn btn-icon" id="btn-bookmarks" onclick="toggleBookmarkFilter()" title="Bookmarks">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2h8v12l-4-2.5L4 14V2z"/></svg>
@@ -341,6 +368,6 @@
 </footer>
 
 <script src="{{ url_for('static', filename='js/tooltips.js', v='20260502-1') }}"></script>
-<script src="{{ url_for('static', filename='js/app.js', v='20260503-1') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js', v='20260510-2') }}"></script>
 </body>
 </html>

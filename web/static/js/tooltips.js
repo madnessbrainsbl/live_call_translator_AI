@@ -5,6 +5,8 @@ const TIPS = {
     'mic-out': 'Mute / Unmute your microphone',
     'mic-in': 'Mute / Unmute incoming audio',
     monitor: 'Capture browser audio and play translated audio in browser',
+    res: 'Load resume text for AI Assistant',
+    vac: 'Load vacancy text for AI Assistant',
     bookmarks: 'Show saved messages only',
     settings: 'Open settings',
     theme: 'Switch light / dark theme',
@@ -30,6 +32,8 @@ const TIPS = {
     'mic-out': 'Вкл / Выкл ваш микрофон',
     'mic-in': 'Вкл / Выкл входящий звук',
     monitor: 'Захватывать звук браузера и воспроизводить перевод',
+    res: 'Загрузить текст резюме для AI Assistant',
+    vac: 'Загрузить текст вакансии для AI Assistant',
     bookmarks: 'Показать только сохранённые',
     settings: 'Открыть настройки',
     theme: 'Светлая / тёмная тема',
@@ -414,6 +418,8 @@ function applyTooltips() {
   t('btn-mic-out', 'mic-out');
   t('btn-mic-in', 'mic-in');
   t('btn-monitor', 'monitor');
+  t('btn-res', 'res');
+  t('btn-vac', 'vac');
   t('btn-bookmarks', 'bookmarks');
   t('btn-settings', 'settings');
   t('theme-btn', 'theme');

@@ -14,6 +14,32 @@ const AI_CALL_HISTORY_MAX = 40;
 const AI_MEMORY_CONTEXT_MAX = 600;
 const AI_MEMORY_ANSWER_MAX = 900;
 const AI_CALL_ANSWER_MAX = 8000;
+const AI_PROMPT_MAX_CHARS = 20000;
+const AI_PROMPT_TRUNCATION_MARKER = '...';
+const AI_PROMPT_TEXT_TYPES = new Set(['', 'text/plain', 'text/markdown']);
+const AI_PROMPT_FILE_EXTENSIONS = ['.txt', '.md', '.markdown'];
+const AI_PROMPT_CONTEXTS = Object.freeze({
+  res: Object.freeze({ settingsKey: 'ai_resume_prompt', buttonId: 'btn-res', title: 'res' }),
+  vac: Object.freeze({ settingsKey: 'ai_vacancy_prompt', buttonId: 'btn-vac', title: 'vac' })
+});
+const SPEAKER_IDS = Object.freeze({
+  outgoing: 'S1',
+  incoming: 'S2'
+});
+const SPEAKER_ROLES = Object.freeze({
+  outgoing: 'Mic Out / You',
+  incoming: 'Mic In / Them'
+});
+const CROSSTALK_EARLIER_ECHO_WINDOW_MS = 15000;
+const CROSSTALK_LATE_ECHO_WINDOW_MS = 8000;
+const CROSSTALK_SHORT_ECHO_WINDOW_MS = 6000;
+const CROSSTALK_SUBSTRING_MIN_WORDS = 3;
+const CROSSTALK_SUBSTRING_MIN_CHARS = 14;
+const CROSSTALK_MIN_SHORT_FRAGMENT_CHARS = 4;
+const CROSSTALK_WORD_OVERLAP_MAX_WORDS = 8;
+const CROSSTALK_WORD_OVERLAP_MIN_RATIO = 0.72;
+const SAME_DIRECTION_DUPLICATE_WINDOW_MS = 1_000;
+const SAME_LANGUAGE_TRANSLATION_HINT = 'Translation is ON, but source and target languages are the same. Change language in Settings.';
 
 let stats = { stt: [], trl: [], tts: [], lat: [], count: 0 };
 let muteState = { outgoing: false, incoming: false };
@@ -26,6 +52,7 @@ let recentRenderedMessages = [];
 let sessionStart = Date.now();
 let bookmarkFilterOn = false;
 let textOnlyMode = false;
+let transcriptOnlyMode = false;
 let allMessages = [];
 let currentSettings = {};
 let availableAudioInputs = [];
@@ -53,6 +80,7 @@ let resumedCallLoaded = false;
 let resumeAutoStart = false;
 let bootReady = false;
 let engineReady = false;
+let activePromptKind = '';
 
 // ===== API key masking (no password detection) =====
 document.querySelectorAll('.sp-key').forEach(input => {
@@ -103,6 +131,158 @@ function showToast(text) {
 // ===== Copy =====
 function copyBubble(text) {
   navigator.clipboard.writeText(text).then(() => showToast('Copied!'));
+}
+
+// ===== AI Prompt Context =====
+function promptConfig(kind) {
+  return AI_PROMPT_CONTEXTS[kind] || null;
+}
+
+function normalizePromptText(text) {
+  return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\u0000/g, '').trim();
+}
+
+function clipPromptText(text) {
+  const value = normalizePromptText(text);
+  if (value.length <= AI_PROMPT_MAX_CHARS) return value;
+  const keep = Math.max(0, AI_PROMPT_MAX_CHARS - AI_PROMPT_TRUNCATION_MARKER.length);
+  return value.slice(0, keep).trimEnd() + AI_PROMPT_TRUNCATION_MARKER;
+}
+
+function promptCounterText(text) {
+  return String(normalizePromptText(text).length) + '/' + String(AI_PROMPT_MAX_CHARS);
+}
+
+function updatePromptCounter() {
+  const textEl = document.getElementById('prompt-text');
+  const countEl = document.getElementById('prompt-count');
+  if (!textEl || !countEl) return;
+  countEl.textContent = promptCounterText(textEl.value);
+}
+
+function currentAiPromptContext() {
+  return {
+    res: clipPromptText(currentSettings.ai_resume_prompt || ''),
+    vac: clipPromptText(currentSettings.ai_vacancy_prompt || '')
+  };
+}
+
+function updatePromptButtons() {
+  Object.keys(AI_PROMPT_CONTEXTS).forEach(kind => {
+    const cfg = promptConfig(kind);
+    const btn = cfg ? document.getElementById(cfg.buttonId) : null;
+    if (!cfg || !btn) return;
+    const loaded = Boolean(clipPromptText(currentSettings[cfg.settingsKey] || ''));
+    btn.classList.toggle('loaded', loaded);
+    btn.setAttribute('aria-pressed', loaded ? 'true' : 'false');
+  });
+}
+
+function openPromptEditor(kind) {
+  const cfg = promptConfig(kind);
+  if (!cfg) {
+    showToast('Unknown prompt');
+    return;
+  }
+  activePromptKind = kind;
+  const titleEl = document.getElementById('prompt-title');
+  const textEl = document.getElementById('prompt-text');
+  if (titleEl) titleEl.textContent = cfg.title;
+  if (textEl) textEl.value = clipPromptText(currentSettings[cfg.settingsKey] || '');
+  updatePromptCounter();
+  document.getElementById('prompt-backdrop')?.classList.add('open');
+  document.getElementById('prompt-panel')?.classList.add('open');
+  setTimeout(() => textEl?.focus(), 0);
+}
+
+function closePromptEditor() {
+  document.getElementById('prompt-backdrop')?.classList.remove('open');
+  document.getElementById('prompt-panel')?.classList.remove('open');
+  activePromptKind = '';
+}
+
+function triggerPromptFile() {
+  const input = document.getElementById('prompt-file');
+  if (!input) {
+    showToast('File input unavailable');
+    return;
+  }
+  input.click();
+}
+
+function isPromptTextFile(file) {
+  if (!file) return false;
+  const name = String(file.name || '').toLowerCase();
+  if (AI_PROMPT_TEXT_TYPES.has(String(file.type || ''))) return true;
+  return AI_PROMPT_FILE_EXTENSIONS.some(ext => name.endsWith(ext));
+}
+
+async function readPromptFile(file) {
+  if (!isPromptTextFile(file)) {
+    throw new Error('Only .txt and .md files are supported');
+  }
+  return clipPromptText(await file.text());
+}
+
+function refreshAssistantAfterPromptChange() {
+  lastSuggestionFingerprint = '';
+  if (aiSuggestionsOpen && allMessages.length) void fetchAiSuggestions(true);
+}
+
+async function savePromptEditor(closeAfterSave = true) {
+  const cfg = promptConfig(activePromptKind);
+  const textEl = document.getElementById('prompt-text');
+  if (!cfg || !textEl) {
+    showToast('Prompt editor unavailable');
+    return;
+  }
+
+  const text = clipPromptText(textEl.value);
+  textEl.value = text;
+  updatePromptCounter();
+  currentSettings[cfg.settingsKey] = text;
+
+  try {
+    await saveSettings();
+    updatePromptButtons();
+    refreshAssistantAfterPromptChange();
+    showToast(text ? cfg.title + ' saved' : cfg.title + ' cleared');
+    if (closeAfterSave) closePromptEditor();
+  } catch (e) {
+    showToast(e.message || 'Prompt save failed');
+  }
+}
+
+async function clearPromptEditor() {
+  const textEl = document.getElementById('prompt-text');
+  if (!textEl) {
+    showToast('Prompt editor unavailable');
+    return;
+  }
+  textEl.value = '';
+  updatePromptCounter();
+  await savePromptEditor(false);
+}
+
+async function loadPromptFile(event) {
+  const input = event?.target || null;
+  const file = input?.files?.[0] || null;
+  if (!file) return;
+  const textEl = document.getElementById('prompt-text');
+  if (!textEl) {
+    showToast('Prompt editor unavailable');
+    return;
+  }
+
+  try {
+    textEl.value = await readPromptFile(file);
+    updatePromptCounter();
+    await savePromptEditor(false);
+  } catch (e) {
+    showToast(e.message || 'File load failed');
+  } finally {
+    input.value = '';
+  }
 }
 
 // ===== AI Assistant =====
@@ -198,7 +378,7 @@ function latestAiMemory() {
 
 function answerSourceFromMessages(messages) {
   const last = messages[messages.length - 1] || {};
-  const speaker = last.direction === 'incoming' ? 'Them' : 'Me';
+  const speaker = speakerPrefix(last.direction || 'outgoing');
   const text = last.translation || last.transcript || '';
   return clipMemoryText(speaker + ': ' + text, AI_MEMORY_CONTEXT_MAX);
 }
@@ -226,11 +406,26 @@ function suggestionFingerprint(messages) {
 }
 
 function providerLabel(provider) {
-  if (provider === 'codex') return 'ChatGPT / Codex';
-  if (provider === 'auto') return 'Auto';
-  if (provider === 'openrouter') return 'OpenRouter';
-  if (provider === 'groq') return 'Groq';
+  const normalized = String(provider || '').trim();
+  if (normalized.includes('+')) {
+    return normalized
+      .split('+')
+      .map(part => providerLabel(part))
+      .join(' + ');
+  }
+  if (normalized === 'codex') return 'ChatGPT / Codex';
+  if (normalized === 'auto') return 'Auto';
+  if (normalized === 'openrouter') return 'OpenRouter';
+  if (normalized === 'groq') return 'Groq';
   return 'LLM';
+}
+
+function combinedProvider(quickProvider, detailProvider) {
+  const quick = String(quickProvider || '').trim();
+  const detail = String(detailProvider || '').trim();
+  if (!quick) return detail;
+  if (!detail || detail === quick) return quick;
+  return quick + '+' + detail;
 }
 
 function latestMessageElement() {
@@ -445,6 +640,7 @@ async function fetchAiSuggestions(force) {
   const basePayload = {
     messages,
     ai_memory: latestAiMemory(),
+    prompt_context: currentAiPromptContext(),
     my_language: currentSettings.my_language || 'en',
     their_language: currentSettings.their_language || 'en',
     ai_provider: currentSettings.ai_provider || 'codex'
@@ -476,7 +672,7 @@ async function fetchAiSuggestions(force) {
       throw new Error(detailData.error || 'detailed suggestion request failed');
     }
     const detailAnswer = detailData.answer || (detailData.suggestions || []).join('\n\n');
-    const provider = detailData.provider || quickProvider;
+    const provider = combinedProvider(quickProvider, detailData.provider);
     const answer = combineAssistantOptions(quickAnswer, detailAnswer);
     lastSuggestionFingerprint = fingerprint;
     renderAssistantAnswer(answer, provider, answer ? 'ready' : 'empty');
@@ -517,7 +713,7 @@ function toggleBookmarkFilter() {
 function exportChat() {
   const lines = [];
   allMessages.forEach(m => {
-    const dir = m.direction === 'outgoing' ? 'YOU' : 'THEM';
+    const dir = speakerPrefix(m.direction);
     const bk = m.bookmarked ? ' *' : '';
     if (m.transcript) lines.push('[' + dir + '] ' + m.transcript);
     lines.push('[' + dir + '] >> ' + m.translation + bk);
@@ -579,24 +775,54 @@ function typewrite(el, text) {
 }
 
 // ===== Chat messages =====
+function speakerId(direction) {
+  return SPEAKER_IDS[direction] || 'S?';
+}
+
+function speakerRole(direction) {
+  return SPEAKER_ROLES[direction] || 'Unknown';
+}
+
+function speakerPrefix(direction) {
+  return speakerId(direction) + ' ' + speakerRole(direction);
+}
+
+function directionLabel(direction) {
+  const myL = (currentSettings.my_language || 'RU').toUpperCase();
+  const theirL = (currentSettings.their_language || 'EN').toUpperCase();
+  const speaker = speakerPrefix(direction);
+  if (transcriptOnlyMode) {
+    return direction === 'outgoing' ? speaker + ' (' + myL + ')' : speaker + ' (' + theirL + ')';
+  }
+  return direction === 'outgoing'
+    ? speaker + ' (' + myL + ' \u2192 ' + theirL + ')'
+    : speaker + ' (' + theirL + ' \u2192 ' + myL + ')';
+}
+
 function flushPending() {
-  if (!pending.direction || !pending.translation) return;
+  const displayText = transcriptOnlyMode
+    ? (pending.transcript || pending.translation || '')
+    : (pending.translation || '');
+  if (!pending.direction || !displayText) return;
+  const currentMessage = {
+    direction: pending.direction,
+    transcript: normalizeMessageText(pending.transcript),
+    translation: normalizeMessageText(displayText),
+    at: Date.now()
+  };
   if (isDuplicatePending()) {
     pending = { direction: null, transcript: null, translation: null };
     hideTyping();
     return;
   }
+  removeEarlierCrossTalkFragments(currentMessage);
   hideTyping();
   maybeAddTimeSep();
 
   if (pending.direction !== lastRenderedDirection) {
     const label = document.createElement('div');
     label.className = 'direction-label ' + pending.direction;
-    const myL = (currentSettings.my_language || 'RU').toUpperCase();
-    const theirL = (currentSettings.their_language || 'EN').toUpperCase();
-    label.textContent = pending.direction === 'outgoing'
-      ? 'You (' + myL + ' \u2192 ' + theirL + ')'
-      : 'Them (' + theirL + ' \u2192 ' + myL + ')';
+    label.textContent = directionLabel(pending.direction);
     chat.insertBefore(label, typingEl);
     lastRenderedDirection = pending.direction;
   }
@@ -610,7 +836,7 @@ function flushPending() {
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   msg.appendChild(bubble);
-  const translationText = pending.translation;
+  const translationText = displayText;
   const transcriptText = pending.transcript;
   bubble.onclick = () => copyBubble(translationText);
   chat.insertBefore(msg, typingEl);
@@ -639,7 +865,9 @@ function flushPending() {
     msg.classList.toggle('bookmarked', msgData.bookmarked);
   };
   typewrite(bubble, translationText);
-  speakTranslationWithExternalTts(translationText, pending.direction);
+  if (!transcriptOnlyMode) {
+    speakTranslationWithExternalTts(translationText, pending.direction);
+  }
   stats.count++;
   updateStats();
   scheduleSuggestionRefresh();
@@ -656,11 +884,7 @@ function renderStoredMessage(item) {
   if (direction !== lastRenderedDirection) {
     const label = document.createElement('div');
     label.className = 'direction-label ' + direction;
-    const myL = (currentSettings.my_language || 'RU').toUpperCase();
-    const theirL = (currentSettings.their_language || 'EN').toUpperCase();
-    label.textContent = direction === 'outgoing'
-      ? 'You (' + myL + ' \u2192 ' + theirL + ')'
-      : 'Them (' + theirL + ' \u2192 ' + myL + ')';
+    label.textContent = directionLabel(direction);
     chat.insertBefore(label, typingEl);
     lastRenderedDirection = direction;
   }
@@ -775,6 +999,85 @@ function messagesLookAlike(a, b) {
   return aTexts.some(left => bTexts.some(right => textsLookAlike(left, right)));
 }
 
+function normalizedWordCount(text) {
+  const normalized = normalizeMessageText(text);
+  return normalized ? normalized.split(/\s+/).length : 0;
+}
+
+function normalizedWords(text) {
+  const normalized = normalizeMessageText(text);
+  return normalized ? normalized.split(/\s+/) : [];
+}
+
+function hasStrongWordOverlap(fragment, source) {
+  const fragmentWords = normalizedWords(fragment);
+  const sourceWords = new Set(normalizedWords(source));
+  if (fragmentWords.length === 0 || fragmentWords.length > CROSSTALK_WORD_OVERLAP_MAX_WORDS) {
+    return false;
+  }
+
+  const overlap = fragmentWords.filter(word => sourceWords.has(word)).length;
+  return overlap / fragmentWords.length >= CROSSTALK_WORD_OVERLAP_MIN_RATIO;
+}
+
+function isLikelyCrossTalkEcho(fragmentText, sourceText, maxAgeMs) {
+  const fragment = normalizeMessageText(fragmentText);
+  const source = normalizeMessageText(sourceText);
+  if (!fragment || !source || fragment === source) return false;
+
+  const fragmentWords = normalizedWordCount(fragment);
+  if (fragmentWords === 0) return false;
+  if (!source.includes(fragment)) {
+    return textsLookAlike(fragment, source) || hasStrongWordOverlap(fragment, source);
+  }
+
+  if (fragmentWords >= CROSSTALK_SUBSTRING_MIN_WORDS || fragment.length >= CROSSTALK_SUBSTRING_MIN_CHARS) {
+    return true;
+  }
+  return maxAgeMs <= CROSSTALK_SHORT_ECHO_WINDOW_MS &&
+    fragmentWords <= 2 &&
+    fragment.length >= CROSSTALK_MIN_SHORT_FRAGMENT_CHARS;
+}
+
+function messageTexts(message) {
+  return [message.transcript, message.translation]
+    .map(normalizeMessageText)
+    .filter(Boolean);
+}
+
+function isCrossTalkEcho(candidate, source, maxAgeMs) {
+  if (!candidate || !source || candidate.direction === source.direction) return false;
+  const candidateTexts = messageTexts(candidate);
+  const sourceTexts = messageTexts(source);
+  return candidateTexts.some(fragment =>
+    sourceTexts.some(full => isLikelyCrossTalkEcho(fragment, full, maxAgeMs))
+  );
+}
+
+function removeRenderedMessage(message) {
+  if (!message || !message.el) return;
+  message.el.remove();
+  allMessages = allMessages.filter(item => item !== message);
+  recentRenderedMessages = recentRenderedMessages.filter(item =>
+    item.direction !== message.direction || !messagesLookAlike(item, message)
+  );
+  if (lastMsgEl === message.el) lastMsgEl = latestMessageElement();
+  if (lastRenderedMessage?.direction === message.direction && messagesLookAlike(lastRenderedMessage, message)) {
+    lastRenderedMessage = recentRenderedMessages[recentRenderedMessages.length - 1] || null;
+  }
+}
+
+function removeEarlierCrossTalkFragments(current) {
+  if (current.direction !== 'incoming') return;
+  const now = Date.now();
+  const staleOutgoing = allMessages.filter(message =>
+    message.direction === 'outgoing' &&
+    now - message.at <= CROSSTALK_EARLIER_ECHO_WINDOW_MS &&
+    isCrossTalkEcho(message, current, now - message.at)
+  );
+  staleOutgoing.forEach(removeRenderedMessage);
+}
+
 function isDuplicatePending() {
   if (!lastRenderedMessage) return false;
   const now = Date.now();
@@ -786,13 +1089,20 @@ function isDuplicatePending() {
 
   for (const recent of recentRenderedMessages) {
     const age = now - recent.at;
-    if (age > 15000) continue;
+    if (age > CROSSTALK_EARLIER_ECHO_WINDOW_MS) continue;
 
-    if (recent.direction === current.direction && messagesLookAlike(recent, current)) {
+    if (recent.direction === current.direction) {
+      if (age <= SAME_DIRECTION_DUPLICATE_WINDOW_MS && messagesLookAlike(recent, current)) {
+        return true;
+      }
+      continue;
+    }
+
+    if (age <= CROSSTALK_LATE_ECHO_WINDOW_MS && recent.direction !== current.direction && messagesLookAlike(recent, current)) {
       return true;
     }
 
-    if (age <= 8000 && recent.direction !== current.direction && messagesLookAlike(recent, current)) {
+    if (age <= CROSSTALK_LATE_ECHO_WINDOW_MS && isCrossTalkEcho(current, recent, age)) {
       return true;
     }
   }
@@ -812,9 +1122,9 @@ function processLine(line) {
     return;
   }
 
-  m = line.match(/\uD83C\uDFA4 \[(outgoing|incoming)\] (.+)/);
+  m = line.match(/\uD83C\uDFA4 \[(?:S[12]\s+)?(outgoing|incoming)\] (.+)/);
   if (m) { flushPending(); pending.direction = m[1]; pending.transcript = m[2]; showTyping(); return; }
-  m = line.match(/\uD83C\uDF10 \[(outgoing|incoming)\] (.+)/);
+  m = line.match(/\uD83C\uDF10 \[(?:S[12]\s+)?(outgoing|incoming)\] (.+)/);
   if (m) { pending.direction = m[1]; pending.translation = m[2]; flushPending(); return; }
   m = line.match(/\u23F1\s+stt=(\d+)ms\s+trl=(\d+)ms\s+tts=(\d+)ms/);
   if (m) {
@@ -869,6 +1179,11 @@ async function preflightStartChecks() {
     openSettings();
     return false;
   }
+  if (!transcriptOnlyMode && isSameLanguageTranslationPair()) {
+    showToast(SAME_LANGUAGE_TRANSLATION_HINT);
+    openSettings();
+    return false;
+  }
 
   try {
     const dg = await checkProviderKey('deepgram', deepgramKey);
@@ -910,10 +1225,12 @@ function applyEngineState(status) {
       timerOffset = 0;
       timerPaused = false;
     }
+    updateMonitorButton();
     return virtualRunning ? 'running' : normalized;
   }
 
   engineRunning = false;
+  updateMonitorButton();
   btn.className = 'btn btn-engine stopped';
   icon.innerHTML = '&#9654;';
   text.textContent = 'Start';
@@ -945,6 +1262,51 @@ let audioCtx = null;
 let monitorQueue = [];
 let monitorPlaying = false;
 let monitorStartedTabCapture = false;
+let monitorStartedEngine = false;
+let monitorStartCommandOverride = '';
+let browserMonitorPlaybackSynced = null;
+
+function updateMonitorButton() {
+  const btn = document.getElementById('btn-monitor');
+  if (!btn) return;
+
+  const nativeCaptureActive = isNativeMonitorCaptureActive();
+  const captureActive = tabCaptureActive || nativeCaptureActive;
+  const active = monitorEnabled || tabCaptureStarting || captureActive;
+  btn.classList.toggle('on', active);
+  btn.classList.toggle('capturing', tabCaptureStarting || captureActive);
+  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  btn.title = captureActive
+    ? 'Monitor is capturing shared browser/system audio'
+    : tabCaptureStarting
+      ? 'Opening browser/system audio picker'
+      : 'Capture browser audio and play translations in browser';
+
+  const label = document.getElementById('monitor-label');
+  if (label) {
+    label.textContent = captureActive ? 'Capturing' : (tabCaptureStarting ? 'Opening...' : 'Monitor');
+  }
+}
+
+function isNativeMonitorCaptureActive() {
+  const callCapture = document.getElementById('cfg-call-output')?.value || currentSettings.meet_input_device || 'default';
+  return Boolean(engineRunning && !muteState.incoming && !tabCaptureActive && isUsableLoopbackDevice(callCapture));
+}
+
+function setMonitorEnabled(enabled) {
+  monitorEnabled = Boolean(enabled);
+  updateMonitorButton();
+}
+
+function setTabCaptureStarting(starting) {
+  tabCaptureStarting = Boolean(starting);
+  updateMonitorButton();
+}
+
+function setTabCaptureActive(active) {
+  tabCaptureActive = Boolean(active);
+  updateMonitorButton();
+}
 
 function updateTextOnlyButton() {
   const btn = document.getElementById('btn-text-only');
@@ -958,8 +1320,50 @@ function updateTextOnlyButton() {
   if (label) label.textContent = 'Text Only';
 }
 
+function updateTranscriptOnlyButton() {
+  const btn = document.getElementById('btn-transcript-only');
+  if (!btn) return;
+  btn.classList.toggle('on', transcriptOnlyMode);
+  btn.setAttribute('aria-pressed', transcriptOnlyMode ? 'true' : 'false');
+  let title = transcriptOnlyMode
+    ? 'Translation OFF: original speech only'
+    : 'Translation ON: translated text is shown';
+  if (!transcriptOnlyMode && isSameLanguageTranslationPair()) {
+    title = SAME_LANGUAGE_TRANSLATION_HINT;
+  }
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+}
+
+function getSelectedLanguagePair() {
+  const myLang = document.getElementById('cfg-my-lang')?.value || currentSettings.my_language || '';
+  const theirLang = document.getElementById('cfg-their-lang')?.value || currentSettings.their_language || '';
+  return {
+    myLang: String(myLang).trim().toLowerCase(),
+    theirLang: String(theirLang).trim().toLowerCase()
+  };
+}
+
+function isSameLanguageTranslationPair() {
+  const pair = getSelectedLanguagePair();
+  return Boolean(pair.myLang && pair.myLang === pair.theirLang);
+}
+
 async function persistTextOnlyMode() {
   const settings = { ...readForm(), text_only_mode: textOnlyMode };
+  await fetch('/api/settings', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(settings)
+  });
+  currentSettings = settings;
+}
+
+async function persistTranscriptOnlyMode() {
+  const settings = {
+    ...readForm(),
+    transcript_only_mode: transcriptOnlyMode,
+    translation_enabled: !transcriptOnlyMode
+  };
   await fetch('/api/settings', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(settings)
@@ -995,10 +1399,44 @@ async function applyTextOnlyMode(sendToEngine = true, persist = false) {
   }
 }
 
+async function applyTranscriptOnlyMode(sendToEngine = true, persist = false) {
+  updateTranscriptOnlyButton();
+  if (sendToEngine) {
+    try {
+      await sendCmd(transcriptOnlyMode ? 'translation_off' : 'translation_on');
+      await syncMonitorAudioMode();
+    } catch (e) {
+      console.warn('Failed to update translation mode in engine:', e);
+    }
+  }
+  if (transcriptOnlyMode) {
+    monitorQueue = [];
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    try {
+      await fetch('/api/poll-audio');
+    } catch (e) {
+      console.warn('Failed to clear queued audio:', e);
+    }
+  }
+  if (persist) {
+    try {
+      await persistTranscriptOnlyMode();
+    } catch (e) {
+      console.warn('Failed to save translation mode:', e);
+    }
+  }
+}
+
 async function toggleTextOnly() {
   textOnlyMode = !textOnlyMode;
   await applyTextOnlyMode(true, true);
   showToast(textOnlyMode ? 'Text only ON' : 'Sound ON');
+}
+
+async function toggleTranscriptOnly() {
+  transcriptOnlyMode = !transcriptOnlyMode;
+  await applyTranscriptOnlyMode(true, true);
+  showToast(transcriptOnlyMode ? 'Translation OFF' : (isSameLanguageTranslationPair() ? SAME_LANGUAGE_TRANSLATION_HINT : 'Translation ON'));
 }
 
 function ensureAudioContext() {
@@ -1012,19 +1450,51 @@ function ensureAudioContext() {
 }
 
 async function toggleMonitor() {
-  monitorEnabled = !monitorEnabled;
-  document.getElementById('btn-monitor').classList.toggle('on', monitorEnabled);
+  setMonitorEnabled(!monitorEnabled);
   // Unlock AudioContext on user gesture
   if (monitorEnabled) {
     await ensureAudioContext();
+
     if (shouldMonitorStartTabCapture()) {
       monitorStartedTabCapture = true;
-      await startTabCapture(defaultMonitorCaptureDirection());
-      if (!tabCaptureActive) monitorStartedTabCapture = false;
+      const started = await startTabCapture(defaultMonitorCaptureDirection());
+      if (!started) {
+        monitorStartedTabCapture = false;
+        setMonitorEnabled(false);
+        await syncMonitorAudioMode();
+        return;
+      }
+      if (!tabCaptureActive) {
+        monitorStartedTabCapture = false;
+        updateMonitorButton();
+      }
+      await syncMonitorAudioMode();
+      showToast('Monitor capturing browser sound');
+      return;
+    }
+
+    const backendState = await syncEngineState();
+    const monitorStartCmd = getMonitorEngineStartCommand();
+    const engineStartCmd = getEngineStartCommand();
+    if ((backendState !== 'running' && backendState !== 'starting') && monitorStartCmd && engineStartCmd) {
+      await prepareMonitorEngineStart(engineStartCmd);
+      await syncMonitorAudioMode();
+      showToast('Starting Monitor...');
+      monitorStartedEngine = true;
+      monitorStartCommandOverride = engineStartCmd;
+      await toggleEngine();
+      return;
     }
   } else if (monitorStartedTabCapture && tabCaptureActive) {
     monitorStartedTabCapture = false;
     stopTabCapture(false);
+  } else {
+    const backendState = await syncEngineState();
+    if (monitorStartedEngine && (backendState === 'running' || backendState === 'starting')) {
+      monitorStartedEngine = false;
+      await toggleEngine();
+      return;
+    }
   }
   await syncMonitorAudioMode();
   showToast(monitorEnabled ? 'Monitor ON' : 'Monitor OFF');
@@ -1033,31 +1503,40 @@ async function toggleMonitor() {
 function shouldMonitorStartTabCapture() {
   return Boolean(
     !tabCaptureActive &&
-    !usesEngineLoopbackCapture() &&
-    availableAudioOutputs.length === 0 &&
-    currentSettings.deepgram_api_key
+    currentSettings.deepgram_api_key &&
+    navigator.mediaDevices &&
+    navigator.mediaDevices.getDisplayMedia
   );
 }
 
-function usesEngineLoopbackCapture() {
-  const micDevice = document.getElementById('cfg-mic')?.value || 'default';
+function getMonitorEngineStartCommand() {
   const callCapture = document.getElementById('cfg-call-output')?.value || 'default';
-  const outgoingLoopback =
-    !muteState.outgoing &&
-    isSystemDefaultDevice(micDevice) &&
-    !isUsableInputDevice(micDevice, true) &&
-    availableAudioOutputs.length > 0;
-  const incomingLoopback =
-    !muteState.incoming &&
-    isSystemLoopbackDevice(callCapture) &&
-    availableAudioOutputs.length > 0;
-  return outgoingLoopback || incomingLoopback;
+  const canCaptureConfiguredIncoming = isUsableInputDevice(callCapture, false) || isUsableLoopbackDevice(callCapture);
+  const canCaptureMonitorIncoming = monitorEnabled && isUsableLoopbackDevice(SYSTEM_LOOPBACK_DEVICE);
+  const canCaptureIncoming = canCaptureConfiguredIncoming || canCaptureMonitorIncoming;
+  return canCaptureIncoming ? 'start_incoming' : '';
+}
+
+async function prepareMonitorEngineStart(startCmd) {
+  if (startCmd === 'start_incoming' || startCmd === 'start') {
+    const callCapture = document.getElementById('cfg-call-output');
+    if (callCapture && availableAudioOutputs.length > 0 && !isUsableLoopbackDevice(callCapture.value)) {
+      callCapture.value = SYSTEM_LOOPBACK_DEVICE;
+    }
+    if (muteState.incoming) {
+      await setDirectionMuted('incoming', false);
+    }
+  }
+
+  await saveSettings();
 }
 
 async function syncMonitorAudioMode() {
   try {
-    const browserPlaybackActive = monitorEnabled && !textOnlyMode && !tabCaptureActive;
+    const browserPlaybackActive = monitorEnabled && !textOnlyMode && !transcriptOnlyMode && !tabCaptureActive;
+    if (browserMonitorPlaybackSynced === browserPlaybackActive) return;
     await sendCmd(browserPlaybackActive ? 'monitor_audio_on' : 'monitor_audio_off');
+    browserMonitorPlaybackSynced = browserPlaybackActive;
   } catch (e) {
     console.warn('Failed to update monitor audio mode in engine:', e);
   }
@@ -1065,7 +1544,7 @@ async function syncMonitorAudioMode() {
 
 async function playAudioItem(item, force = false) {
   if (!item) return;
-  if (textOnlyMode && !force) return;
+  if ((textOnlyMode || transcriptOnlyMode) && !force) return;
   await ensureAudioContext();
   const { sr, b64 } = item;
   const raw = atob(b64);
@@ -1090,7 +1569,7 @@ async function playAudioItem(item, force = false) {
 // Poll for audio and play via AudioContext
 async function pollAudio() {
   if (!monitorEnabled || !audioCtx) return;
-  if (textOnlyMode || tabCaptureActive) {
+  if (textOnlyMode || transcriptOnlyMode || tabCaptureActive) {
     monitorQueue = [];
     try { await fetch('/api/poll-audio'); } catch(e) {}
     return;
@@ -1202,6 +1681,11 @@ async function flushTabTranscript() {
     ? (currentSettings.their_language || 'en')
     : (currentSettings.my_language || 'ru');
   processLine('\uD83C\uDFA4 [' + direction + '] ' + text);
+  if (transcriptOnlyMode) {
+    processLine('\uD83C\uDF10 [' + direction + '] ' + text);
+    processLine('\u23F1  stt=0ms trl=0ms tts=0ms');
+    return;
+  }
   try {
     const resp = await fetch('/api/translate', {
       method: 'POST',
@@ -1232,7 +1716,7 @@ async function flushTabTranscript() {
 }
 
 function defaultMonitorCaptureDirection() {
-  return canUseOutgoingMicrophone() ? 'incoming' : 'outgoing';
+  return 'incoming';
 }
 
 async function startTabCapture(direction = 'incoming') {
@@ -1241,12 +1725,12 @@ async function startTabCapture(direction = 'incoming') {
   const key = currentSettings.deepgram_api_key;
   if (!key) { showToast('Set Deepgram API key in Settings first'); return false; }
   tabCaptureDirection = direction === 'outgoing' ? 'outgoing' : 'incoming';
-  tabCaptureStarting = true;
+  setTabCaptureStarting(true);
 
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
       showToast('Monitor audio capture is not supported in this browser');
-      tabCaptureStarting = false;
+      setTabCaptureStarting(false);
       return false;
     }
 
@@ -1272,13 +1756,13 @@ async function startTabCapture(direction = 'incoming') {
       showToast('No shared audio. Reopen Monitor and enable tab/screen audio sharing');
       tabStream.getTracks().forEach(t => t.stop());
       tabStream = null;
-      tabCaptureStarting = false;
+      setTabCaptureStarting(false);
       return false;
     }
   } catch(e) {
     console.warn('[TAB] system audio capture failed:', e);
     showToast(e && e.name === 'NotAllowedError' ? 'Monitor audio cancelled' : 'Monitor audio capture failed');
-    tabCaptureStarting = false;
+    setTabCaptureStarting(false);
     return false;
   }
 
@@ -1294,7 +1778,7 @@ async function startTabCapture(direction = 'incoming') {
       if (settled) return;
       settled = true;
       clearTimeout(openTimeout);
-      tabCaptureStarting = false;
+      setTabCaptureStarting(false);
       if (message) showToast(message);
       if (!ok) {
         if (tabRecorder && tabRecorder.state !== 'inactive') tabRecorder.stop();
@@ -1304,7 +1788,7 @@ async function startTabCapture(direction = 'incoming') {
         tabDgSocket = null;
         tabStream = null;
         resetTabTranscriptBuffer();
-        tabCaptureActive = false;
+        setTabCaptureActive(false);
         tabCaptureDirection = 'incoming';
         void syncEngineState();
       }
@@ -1328,7 +1812,7 @@ async function startTabCapture(direction = 'incoming') {
         tabStream.getAudioTracks()[0].onmute = () => showToast('Monitor audio track is muted');
         tabStream.getAudioTracks()[0].onunmute = () => showToast('Monitor audio detected');
         tabRecorder.start(250);
-        tabCaptureActive = true;
+        setTabCaptureActive(true);
         void syncMonitorAudioMode();
         void syncEngineState();
         finish(true, tabCaptureDirection === 'outgoing'
@@ -1373,7 +1857,7 @@ async function startTabCapture(direction = 'incoming') {
 
 function stopTabCapture(showMessage = true) {
   flushTabTranscript();
-  tabCaptureStarting = false;
+  setTabCaptureStarting(false);
   if (tabRecorder && tabRecorder.state !== 'inactive') tabRecorder.stop();
   if (tabDgSocket && tabDgSocket.readyState === WebSocket.OPEN) {
     tabDgSocket.send(new Uint8Array(0)); // close signal
@@ -1385,8 +1869,9 @@ function stopTabCapture(showMessage = true) {
   tabStream = null;
   resetTabTranscriptBuffer();
   monitorStartedTabCapture = false;
-  tabCaptureActive = false;
+  setTabCaptureActive(false);
   tabCaptureDirection = 'incoming';
+  setMonitorEnabled(false);
   syncMonitorAudioMode();
   void syncEngineState();
   if (showMessage) showToast('Monitor audio capture OFF');
@@ -1411,8 +1896,8 @@ async function toggleEngine() {
     if (backendState === 'running' || backendState === 'starting' || tabCaptureActive) {
       if (tabCaptureActive) stopTabCapture(false);
       monitorStartedTabCapture = false;
-      monitorEnabled = false;
-      document.getElementById('btn-monitor').classList.remove('on');
+      monitorStartedEngine = false;
+      setMonitorEnabled(false);
       await sendCmd('stop');
       await fetch('/api/calls/end', { method: 'POST' });
       await sleep(400);
@@ -1421,19 +1906,19 @@ async function toggleEngine() {
       return;
     }
 
-    const startCmd = getEngineStartCommand();
+    const forcedStartCmd = monitorStartCommandOverride;
+    monitorStartCommandOverride = '';
+    const startCmd = forcedStartCmd || getEngineStartCommand();
     if (!startCmd) {
       await syncEngineState();
       if (!tabCaptureActive && shouldOfferSystemAudioCapture()) {
-        monitorEnabled = true;
-        document.getElementById('btn-monitor').classList.add('on');
+        setMonitorEnabled(true);
         await ensureAudioContext();
         monitorStartedTabCapture = true;
         const started = await startTabCapture();
         if (!started) {
           monitorStartedTabCapture = false;
-          monitorEnabled = false;
-          document.getElementById('btn-monitor').classList.remove('on');
+          setMonitorEnabled(false);
           await syncMonitorAudioMode();
         }
         if (started && tabCaptureActive) {
@@ -1445,10 +1930,16 @@ async function toggleEngine() {
       return;
     }
 
+    if (startCmd === 'start_incoming' || startCmd === 'start') {
+      await prepareMonitorEngineStart(startCmd);
+    }
+
     if (!(await preflightStartChecks())) {
       await syncEngineState();
       return;
     }
+
+    await saveSettings();
 
     btn.className = 'btn btn-engine stopped';
     text.textContent = 'Starting...';
@@ -1476,6 +1967,7 @@ async function toggleEngine() {
     if (evtSource) { evtSource.close(); }
     connectSSE();
 
+    browserMonitorPlaybackSynced = null;
     await syncMonitorAudioMode();
     const resp = await sendCmd(startCmd);
     if ((resp.status || '').startsWith('error:')) {
@@ -1508,18 +2000,15 @@ function getEngineStartCommand() {
   const callCapture = document.getElementById('cfg-call-output')?.value || 'default';
 
   const canCaptureOutgoing = isUsableInputDevice(micDevice, true);
-  const canCaptureOutgoingViaLoopback = !canCaptureOutgoing
-    && isSystemDefaultDevice(micDevice)
-    && availableAudioOutputs.length > 0;
   const canPlayOutgoing = isUsableOutputDevice(callPlayback, true);
-  if (!muteState.outgoing && (canCaptureOutgoing || canCaptureOutgoingViaLoopback) && canPlayOutgoing) {
+  if (!muteState.outgoing && canCaptureOutgoing && canPlayOutgoing) {
     pipelines.push('outgoing');
   }
 
-  const canCaptureIncoming = isUsableInputDevice(callCapture, false) || isUsableLoopbackDevice(callCapture);
-  const incomingDuplicatesOutgoingLoopback =
-    canCaptureOutgoingViaLoopback && isSystemLoopbackDevice(callCapture) && !muteState.outgoing;
-  if (!muteState.incoming && !tabCaptureActive && canCaptureIncoming && !incomingDuplicatesOutgoingLoopback) {
+  const canCaptureConfiguredIncoming = isUsableInputDevice(callCapture, false) || isUsableLoopbackDevice(callCapture);
+  const canCaptureMonitorIncoming = monitorEnabled && isUsableLoopbackDevice(SYSTEM_LOOPBACK_DEVICE);
+  const canCaptureIncoming = canCaptureConfiguredIncoming || canCaptureMonitorIncoming;
+  if (!muteState.incoming && !tabCaptureActive && canCaptureIncoming) {
     pipelines.push('incoming');
   }
 
@@ -1593,7 +2082,7 @@ function getEngineStartBlockedMessage() {
       return 'Monitor is already capturing browser sound.';
     }
     return availableAudioOutputs.length > 0
-      ? 'No microphone input. Start will use system output loopback.'
+      ? 'No microphone input. Start captures speaker audio through Mic In only.'
       : 'No microphone input. Use Monitor or connect a microphone.';
   }
   if (!muteState.outgoing && !isUsableOutputDevice(callPlayback, true)) {
@@ -1628,12 +2117,16 @@ async function toggleMute(direction) {
     return;
   }
 
-  muteState[direction] = !muteState[direction];
-  const muted = muteState[direction];
+  await setDirectionMuted(direction, !muteState[direction]);
+}
+
+async function setDirectionMuted(direction, muted) {
+  muteState[direction] = muted;
   await sendCmd(muted ? 'mute_' + direction : 'unmute_' + direction);
   const btn = document.getElementById(direction === 'outgoing' ? 'btn-mic-out' : 'btn-mic-in');
-  btn.className = muted ? 'btn muted' : 'btn active';
+  if (btn) btn.className = muted ? 'btn muted' : 'btn active';
   updateAudioControlAvailability();
+  updateMonitorButton();
 }
 
 function clearAll() {
@@ -1683,17 +2176,23 @@ function populateForm(s) {
   const orModel = document.getElementById('cfg-openrouter-model');
   if (orModel) orModel.value = s.openrouter_model || 'openrouter/auto';
   textOnlyMode = !!s.text_only_mode;
+  transcriptOnlyMode = !!s.transcript_only_mode || s.translation_enabled === false;
   if (ttsProvider) ttsProvider.value = s.tts_provider || 'piper';
-  applyTextOnlyMode(true, false);
   if (!s.deepgram_api_key && s._deepgram_from_env) dg.placeholder = 'Set via .env file';
   if (!s.groq_api_key && s._groq_from_env) gr.placeholder = 'Set via .env file';
   if (!s.openrouter_api_key && s._openrouter_from_env) or.placeholder = 'Set via .env file';
   document.getElementById('cfg-my-lang').value = s.my_language || 'en';
   document.getElementById('cfg-their-lang').value = s.their_language || 'en';
+  updateTextOnlyButton();
+  updateTranscriptOnlyButton();
+  updateMonitorButton();
   document.getElementById('cfg-endpointing').value = s.endpointing_ms || 700;
   document.getElementById('endpointing-val').textContent = (s.endpointing_ms || 700) + 'ms';
   document.getElementById('cfg-call-input').value = s.meet_output_device || 'default';
   document.getElementById('cfg-call-output').value = s.meet_input_device || 'default';
+  currentSettings.ai_resume_prompt = clipPromptText(s.ai_resume_prompt || '');
+  currentSettings.ai_vacancy_prompt = clipPromptText(s.ai_vacancy_prompt || '');
+  updatePromptButtons();
   // Device dropdowns populated by loadDevices() using currentSettings
   if (Object.keys(allVoices).length > 0) updateVoiceDropdowns();
 }
@@ -1707,6 +2206,8 @@ function readForm() {
     codex_model: (document.getElementById('cfg-codex-model')?.value || 'gpt-5.4').trim(),
     openrouter_api_key: (document.getElementById('cfg-openrouter')._getRealValue || (() => document.getElementById('cfg-openrouter').value))().trim(),
     openrouter_model: (document.getElementById('cfg-openrouter-model')?.value || 'openrouter/auto').trim(),
+    ai_resume_prompt: clipPromptText(currentSettings.ai_resume_prompt || ''),
+    ai_vacancy_prompt: clipPromptText(currentSettings.ai_vacancy_prompt || ''),
     tts_provider: document.getElementById('cfg-tts-provider')?.value || 'piper',
     my_language: document.getElementById('cfg-my-lang').value,
     their_language: document.getElementById('cfg-their-lang').value,
@@ -1718,6 +2219,8 @@ function readForm() {
     meet_output_device: document.getElementById('cfg-call-input').value || 'default',
     endpointing_ms: parseInt(document.getElementById('cfg-endpointing').value),
     text_only_mode: textOnlyMode,
+    transcript_only_mode: transcriptOnlyMode,
+    translation_enabled: !transcriptOnlyMode,
   };
 }
 
@@ -1789,8 +2292,14 @@ async function downloadDefaultVoice(lang, hintId) {
 }
 
 // Language change → update voice dropdowns
-document.getElementById('cfg-my-lang').addEventListener('change', updateVoiceDropdowns);
-document.getElementById('cfg-their-lang').addEventListener('change', updateVoiceDropdowns);
+document.getElementById('cfg-my-lang').addEventListener('change', () => {
+  updateVoiceDropdowns();
+  updateTranscriptOnlyButton();
+});
+document.getElementById('cfg-their-lang').addEventListener('change', () => {
+  updateVoiceDropdowns();
+  updateTranscriptOnlyButton();
+});
 document.getElementById('cfg-tts-provider')?.addEventListener('change', () => {
   if (isBrowserTtsProvider()) void loadBrowserVoices().then(updateVoiceDropdowns);
   else updateVoiceDropdowns();
@@ -1857,6 +2366,32 @@ async function testKey(provider, triggerBtn = null) {
   }
 
   setTimeout(() => { btn.textContent = 'Test'; btn.className = 'sp-test-btn'; }, 4000);
+}
+
+async function switchCodexAccount() {
+  const btn = document.getElementById('codex-switch');
+  if (!btn) return;
+  const oldText = btn.textContent;
+  btn.textContent = 'Opening...';
+  btn.className = 'sp-test-btn testing';
+  try {
+    const r = await fetch('/api/codex/device-login', { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok || data.error) throw new Error(data.error || 'Failed to open Codex login');
+    btn.textContent = 'Opened';
+    btn.className = 'sp-test-btn ok';
+    showToast(data.message || 'Codex login opened');
+    const testBtn = document.getElementById('test-codex');
+    if (testBtn) {
+      testBtn.textContent = 'Test after login';
+      testBtn.className = 'sp-test-btn';
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+    btn.className = 'sp-test-btn fail';
+    showToast(e.message || 'Failed to open Codex login');
+  }
+  setTimeout(() => { btn.textContent = oldText; btn.className = 'sp-test-btn'; }, 5000);
 }
 
 // Voice preview — synthesize + play through speakers via engine
@@ -2029,7 +2564,7 @@ function findBrowserVoice(voiceName, lang) {
 }
 
 async function speakWithBrowser(text, lang, voiceName, force = false) {
-  if (!force && (textOnlyMode || !isBrowserTtsProvider())) return;
+  if (!force && (textOnlyMode || transcriptOnlyMode || !isBrowserTtsProvider())) return;
   if (!('speechSynthesis' in window)) {
     throw new Error('Browser speech synthesis is unavailable');
   }
@@ -2053,7 +2588,7 @@ async function speakWithBrowser(text, lang, voiceName, force = false) {
 }
 
 function speakTranslationWithBrowser(text, direction) {
-  if (textOnlyMode || !isBrowserTtsProvider() || !text) return;
+  if (textOnlyMode || transcriptOnlyMode || !isBrowserTtsProvider() || !text) return;
   const lang = direction === 'outgoing'
     ? (currentSettings.their_language || document.getElementById('cfg-their-lang').value || 'en')
     : (currentSettings.my_language || document.getElementById('cfg-my-lang').value || 'ru');
@@ -2143,7 +2678,7 @@ function base64ToBlobUrl(b64, mime) {
 }
 
 async function playCompressedAudio(b64, mime) {
-  if (textOnlyMode || !b64) return;
+  if (textOnlyMode || transcriptOnlyMode || !b64) return;
   const url = base64ToBlobUrl(b64, mime);
   try {
     const audio = new Audio(url);
@@ -2181,7 +2716,7 @@ async function withCaptureMuted(direction, fn) {
 }
 
 async function speakWithEdge(text, lang, voiceName, direction = null, force = false) {
-  if (!force && (textOnlyMode || !isEdgeTtsProvider())) return;
+  if (!force && (textOnlyMode || transcriptOnlyMode || !isEdgeTtsProvider())) return;
   const body = { text, lang, voice: voiceName || '' };
   const run = async () => {
     const r = await fetch('/api/edge-tts', {
@@ -2200,7 +2735,7 @@ async function speakWithEdge(text, lang, voiceName, direction = null, force = fa
 }
 
 function speakTranslationWithEdge(text, direction) {
-  if (textOnlyMode || !isEdgeTtsProvider() || !text) return;
+  if (textOnlyMode || transcriptOnlyMode || !isEdgeTtsProvider() || !text) return;
   const lang = direction === 'outgoing'
     ? (currentSettings.their_language || document.getElementById('cfg-their-lang').value || 'en')
     : (currentSettings.my_language || document.getElementById('cfg-my-lang').value || 'ru');
@@ -2593,6 +3128,7 @@ async function loadDevices() {
     fillSelect('cfg-call-input', outputDevs, callPlaybackDevice);
     fillSelect('cfg-call-output', inputDevs, callCaptureDevice, { includeLoopback: outputDevs.length > 0 });
     updateAudioControlAvailability();
+    updateMonitorButton();
   } catch(e) { console.error('Failed to load devices', e); }
 }
 
@@ -2646,6 +3182,7 @@ async function saveAndRestart() {
     bar.style.width = '35%';
     setEnginePill('restarting', 'Restarting...');
     await fetch('/api/engine/restart', { method: 'POST' });
+    browserMonitorPlaybackSynced = null;
     await sleep(500);
 
     // Stage 3: Wait for models to load
@@ -2732,7 +3269,10 @@ async function waitForEngine() {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', updateAudioControlAvailability);
   });
+  document.getElementById('prompt-text')?.addEventListener('input', updatePromptCounter);
+  updatePromptButtons();
   updateAudioControlAvailability();
+  updateMonitorButton();
   await loadResumedCallFromUrl();
 
   // Auto-open settings if no API keys configured

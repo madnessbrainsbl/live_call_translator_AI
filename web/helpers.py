@@ -212,6 +212,46 @@ def _codex_subprocess_env():
     return env
 
 
+def _powershell_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _powershell_invoke(args):
+    return "& " + " ".join(_powershell_quote(arg) for arg in args)
+
+
+def launch_codex_device_login():
+    """Open a visible PowerShell window for switching Codex ChatGPT accounts."""
+    if os.name != "nt":
+        raise RuntimeError("Codex device login launcher is only implemented for Windows.")
+
+    shell = shutil.which("pwsh.exe") or shutil.which("powershell.exe") or "powershell.exe"
+    codex_cmd = _codex_command_prefix()
+    logout_cmd = _powershell_invoke(codex_cmd + ["logout"])
+    login_cmd = _powershell_invoke(codex_cmd + ["login", "--device-auth"])
+    script = "\n".join([
+        "$ErrorActionPreference = 'Continue'",
+        "$Host.UI.RawUI.WindowTitle = 'Codex device login'",
+        "Write-Host 'Switching Codex account for Live Translator...' -ForegroundColor Cyan",
+        "Write-Host ''",
+        "Write-Host '1. Logging out the current Codex session.'",
+        logout_cmd,
+        "Write-Host ''",
+        "Write-Host '2. Starting Codex device login. Follow the code/browser instructions below.'",
+        login_cmd,
+        "Write-Host ''",
+        "Write-Host 'Done. Return to Live Translator and press Test.' -ForegroundColor Green",
+        "Read-Host 'Press Enter to close this window'",
+    ])
+    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    return subprocess.Popen(
+        [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        cwd=os.getcwd(),
+        env=_codex_subprocess_env(),
+        creationflags=creationflags,
+    )
+
+
 def _sanitize_codex_error(output):
     text = (output or "").strip()
     lower = text.lower()

@@ -4,7 +4,8 @@ import os
 import json
 import sys
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOURCE_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.abspath(os.environ.get("TRANSLATOR_APP_ROOT") or SOURCE_BASE_DIR)
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 DB_FILE = os.path.join(BASE_DIR, "calls.db")
@@ -18,6 +19,8 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_CODEX_MODEL = "gpt-5.4"
 DEFAULT_OPENROUTER_MODEL = "openrouter/auto"
+DEFAULT_MY_LANGUAGE = "ru"
+DEFAULT_THEIR_LANGUAGE = "en"
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEEPGRAM_API_URL = "https://api.deepgram.com/v1/projects"
@@ -25,6 +28,8 @@ PIPER_VOICES_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
 USER_AGENT = "translator/1.0"
 
 CALL_IDLE_TIMEOUT = 300  # 5 min silence -> auto-close call
+AI_RESUME_PROMPT_MAX_CHARS = 20000
+AI_VACANCY_PROMPT_MAX_CHARS = 20000
 
 IS_LINUX = sys.platform.startswith("linux")
 IS_WINDOWS = sys.platform.startswith("win")
@@ -87,7 +92,11 @@ DEFAULT_SETTINGS = {
     "codex_model": DEFAULT_CODEX_MODEL,
     "openrouter_api_key": "",
     "openrouter_model": OPENROUTER_MODEL,
+    "ai_resume_prompt": "",
+    "ai_vacancy_prompt": "",
     "text_only_mode": False,
+    "transcript_only_mode": False,
+    "translation_enabled": True,
     "tts_provider": "piper",
     "tts_outgoing_voice": "",
     "tts_incoming_voice": "",
@@ -96,8 +105,8 @@ DEFAULT_SETTINGS = {
     "meet_input_device": DEFAULT_MEET_INPUT_DEVICE,
     "meet_output_device": DEFAULT_MEET_OUTPUT_DEVICE,
     "endpointing_ms": 700,
-    "my_language": "en",
-    "their_language": "en",
+    "my_language": DEFAULT_MY_LANGUAGE,
+    "their_language": DEFAULT_THEIR_LANGUAGE,
 }
 
 
@@ -131,6 +140,31 @@ def english_device_label(value):
     return label
 
 
+def _normalize_language_code(value: object, fallback: str) -> str:
+    code = str(value or "").strip().lower().split("-", 1)[0]
+    return code or fallback
+
+
+def _repair_translation_language_pair(settings: dict) -> dict:
+    migrated = dict(settings)
+    my_language = _normalize_language_code(migrated.get("my_language"), DEFAULT_MY_LANGUAGE)
+    their_language = _normalize_language_code(
+        migrated.get("their_language"), DEFAULT_THEIR_LANGUAGE
+    )
+
+    transcript_only = bool(migrated.get("transcript_only_mode", False))
+    if not transcript_only and my_language == their_language:
+        their_language = (
+            DEFAULT_THEIR_LANGUAGE
+            if my_language != DEFAULT_THEIR_LANGUAGE
+            else DEFAULT_MY_LANGUAGE
+        )
+
+    migrated["my_language"] = my_language
+    migrated["their_language"] = their_language
+    return migrated
+
+
 def _migrate_platform_audio_settings(settings):
     migrated = dict(settings)
 
@@ -143,6 +177,13 @@ def _migrate_platform_audio_settings(settings):
         endpointing_ms = 700
     migrated["endpointing_ms"] = max(500, endpointing_ms)
     migrated.pop("translation_max_tokens", None)
+
+    transcript_only = bool(migrated.get("transcript_only_mode", False))
+    if migrated.get("translation_enabled") is False:
+        transcript_only = True
+    migrated["transcript_only_mode"] = transcript_only
+    migrated["translation_enabled"] = not transcript_only
+    migrated = _repair_translation_language_pair(migrated)
 
     tts_provider = str(migrated.get("tts_provider") or "piper").strip().lower()
     if tts_provider == "browser":

@@ -13,6 +13,7 @@ translator-*.tar
 
 # Rust
 /native/audio_engine/target/
+/native/windows_launcher/target/
 
 # Models (large, downloaded separately)
 /models/
@@ -29,6 +30,7 @@ settings.json
 # Python
 /.venv/
 __pycache__/
+/.pytest_cache/
 /.local/
 
 # Runtime
@@ -36,6 +38,8 @@ test-log.txt
 /tts-output/
 calls.db
 /voices-catalog.json
+/dist/
+/portable/
 
 # Downloaded native runtime
 /vendor/onnxruntime/
@@ -51,3 +55,6 @@ calls.db
 article.md
 LAUNCH_PLAN.md
 HANDOFF.md
+
+# Local staging copy for GitHub upload
+/github/

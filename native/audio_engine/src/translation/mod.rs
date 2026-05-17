@@ -95,9 +95,19 @@ impl TranslationEngine {
         })
     }
 
+    pub fn disabled() -> Self {
+        info!("Translation engine disabled; original transcripts will be displayed");
+        Self {
+            api_key: String::new(),
+        }
+    }
+
     pub fn translate(&self, text: &str, direction: &TranslationDirection) -> Result<String> {
         if text.trim().is_empty() {
             return Ok(String::new());
+        }
+        if self.api_key.is_empty() {
+            bail!("GROQ_API_KEY is not set");
         }
 
         let system_prompt = format!(

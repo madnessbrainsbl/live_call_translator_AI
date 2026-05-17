@@ -8,8 +8,7 @@ audio_engine_binary =
 
 config :translator,
   audio_engine_path:
-    Path.join([__DIR__, "..", "native", "audio_engine", "target", "release", audio_engine_binary])
-    |> Path.expand(),
+    Path.join(["native", "audio_engine", "target", "release", audio_engine_binary]),
   vad_threshold: 0.5,
   min_silence_ms: 500,
   transcript_timeout_ms: 2000,

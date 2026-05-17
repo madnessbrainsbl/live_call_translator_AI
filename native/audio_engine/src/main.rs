@@ -15,7 +15,7 @@ use crossbeam_channel::bounded;
 use log::{debug, error, info};
 
 use crate::engine::{Engine, EngineConfig};
-use crate::protocol::{read_command, write_event, Event};
+use crate::protocol::{read_command, write_event, Command, Event};
 
 fn main() -> Result<()> {
     // Logger writes to stderr — stdout is reserved for the protocol channel.
@@ -90,8 +90,9 @@ fn main() -> Result<()> {
             }
         };
 
-        debug!("Received command: {:?}", cmd);
-        debug_log(&format!("Received command: {:?}", cmd));
+        let command_label = describe_command(&cmd);
+        debug!("Received command: {}", command_label);
+        debug_log(&format!("Received command: {}", command_label));
 
         // handle_command returns immediate events (Pong, Started, etc.)
         let immediate_events = engine.handle_command(cmd);
@@ -123,6 +124,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn describe_command(command: &Command) -> String {
+    match command {
+        Command::Ping => "ping".to_string(),
+        Command::Start { pipelines, .. } => format!("start pipelines={:?}", pipelines),
+        Command::Stop => "stop".to_string(),
+        Command::SetConfig { key, .. } => format!("set_config key={}", key),
+        Command::Shutdown => "shutdown".to_string(),
+        Command::ListDevices => "list_devices".to_string(),
+        Command::TtsPreview { lang, voice } => {
+            format!("tts_preview lang={} voice={}", lang, voice)
+        }
+    }
+}
+
 fn debug_log(message: &str) {
     let path = match std::env::var("TRANSLATOR_DEBUG_LOG") {
         Ok(v) if !v.trim().is_empty() => v,
@@ -135,6 +150,29 @@ fn debug_log(message: &str) {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let _ = writeln!(file, "[{}] {}", ts, message);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn command_log_description_redacts_start_config() {
+        let command = Command::Start {
+            pipelines: vec!["outgoing".to_string()],
+            config: Some(HashMap::from([(
+                "deepgram_api_key".to_string(),
+                serde_json::Value::String("secret".to_string()),
+            )])),
+        };
+
+        let description = describe_command(&command);
+
+        assert_eq!(description, "start pipelines=[\"outgoing\"]");
+        assert!(!description.contains("secret"));
+        assert!(!description.contains("deepgram_api_key"));
     }
 }
 

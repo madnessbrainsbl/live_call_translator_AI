@@ -21,9 +21,11 @@ defmodule Translator.AudioEngine do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @spec start_pipelines(list(String.t())) :: :ok | {:error, term()}
-  def start_pipelines(pipelines \\ ["outgoing", "incoming"]) do
-    config = Translator.Config.get_all()
+  @spec start_pipelines(list(String.t()), map()) :: :ok | {:error, term()}
+  def start_pipelines(pipelines \\ ["outgoing", "incoming"], overrides \\ %{}) do
+    config =
+      runtime_config()
+      |> Map.merge(stringify_keys(overrides))
 
     GenServer.call(__MODULE__, {:start_pipelines, pipelines, config})
   end
@@ -95,6 +97,7 @@ defmodule Translator.AudioEngine do
 
   def handle_call({:start_pipelines, pipelines, config}, _from, state) do
     log_to_file("→ Port start pipelines=#{inspect(pipelines)}")
+
     command = %{
       "cmd" => "start",
       "pipelines" => pipelines,
@@ -243,9 +246,10 @@ defmodule Translator.AudioEngine do
   # --- Private Helpers ---
 
   defp open_port do
-    engine_path = Application.get_env(:translator, :audio_engine_path)
+    root = app_root()
+    engine_path = engine_path(root)
     settings = read_settings()
-    models_base = System.get_env("TRANSLATOR_MODELS_DIR", "./models")
+    models_base = System.get_env("TRANSLATOR_MODELS_DIR", Path.join(root, "models"))
     {default_meet_input, default_meet_output} = default_virtual_devices()
 
     my_lang = Map.get(settings, "my_language", "ru")
@@ -263,30 +267,50 @@ defmodule Translator.AudioEngine do
       ort_path =
         System.get_env(
           "ORT_DYLIB_PATH",
-          Path.join(File.cwd!(), "vendor/onnxruntime-win-x64/lib/onnxruntime.dll")
+          Path.join(root, "vendor/onnxruntime-win-x64/lib/onnxruntime.dll")
         )
 
-      port_env = [
-        {~c"RUST_LOG", ~c"warn"},
-        {~c"DEEPGRAM_API_KEY", charlist_setting(settings, "deepgram_api_key", "DEEPGRAM_API_KEY")},
-        {~c"GROQ_API_KEY", charlist_setting(settings, "groq_api_key", "GROQ_API_KEY")},
-        {~c"TRANSLATOR_TTS_EN_MODEL", String.to_charlist("#{models_base}/piper-#{their_lang}/#{out_voice}.onnx")},
-        {~c"TRANSLATOR_TTS_EN_CONFIG", String.to_charlist("#{models_base}/piper-#{their_lang}/#{out_voice}.onnx.json")},
-        {~c"TRANSLATOR_TTS_RU_MODEL", String.to_charlist("#{models_base}/piper-#{my_lang}/#{in_voice}.onnx")},
-        {~c"TRANSLATOR_TTS_RU_CONFIG", String.to_charlist("#{models_base}/piper-#{my_lang}/#{in_voice}.onnx.json")},
-        {~c"TRANSLATOR_MIC_DEVICE", charlist_device_setting(settings, "mic_device", "default")},
-        {~c"TRANSLATOR_SPEAKER_DEVICE", charlist_device_setting(settings, "speaker_device", "default")},
-        {~c"TRANSLATOR_MEET_INPUT", charlist_device_setting(settings, "meet_input_device", default_meet_input)},
-        {~c"TRANSLATOR_MEET_OUTPUT", charlist_device_setting(settings, "meet_output_device", default_meet_output)},
-        {~c"TRANSLATOR_ENDPOINTING_MS", String.to_charlist("#{Map.get(settings, "endpointing_ms", 300)}")},
-        {~c"TRANSLATOR_MY_LANG", String.to_charlist(Map.get(settings, "my_language", "ru"))},
-        {~c"TRANSLATOR_THEIR_LANG", String.to_charlist(Map.get(settings, "their_language", "en"))},
-        {~c"TRANSLATOR_TTS_ENABLED", String.to_charlist(if(Map.get(settings, "text_only_mode", false), do: "false", else: "true"))},
-        {~c"TRANSLATOR_TTS_PROVIDER", String.to_charlist(Map.get(settings, "tts_provider", "piper"))},
-        {~c"TRANSLATOR_DEBUG_LOG", String.to_charlist(Path.join(File.cwd!(), "engine-debug.log"))},
-        {~c"ORT_DYLIB_PATH", String.to_charlist(ort_path)},
-        {~c"PATH", String.to_charlist(runtime_path(ort_path))}
-      ]
+      port_env =
+        [
+          {~c"RUST_LOG", ~c"warn"},
+          {~c"DEEPGRAM_API_KEY",
+           charlist_setting(settings, "deepgram_api_key", "DEEPGRAM_API_KEY")},
+          {~c"GROQ_API_KEY", charlist_setting(settings, "groq_api_key", "GROQ_API_KEY")},
+          {~c"TRANSLATOR_TTS_EN_MODEL",
+           String.to_charlist("#{models_base}/piper-#{their_lang}/#{out_voice}.onnx")},
+          {~c"TRANSLATOR_TTS_EN_CONFIG",
+           String.to_charlist("#{models_base}/piper-#{their_lang}/#{out_voice}.onnx.json")},
+          {~c"TRANSLATOR_TTS_RU_MODEL",
+           String.to_charlist("#{models_base}/piper-#{my_lang}/#{in_voice}.onnx")},
+          {~c"TRANSLATOR_TTS_RU_CONFIG",
+           String.to_charlist("#{models_base}/piper-#{my_lang}/#{in_voice}.onnx.json")},
+          {~c"TRANSLATOR_MIC_DEVICE", charlist_device_setting(settings, "mic_device", "default")},
+          {~c"TRANSLATOR_SPEAKER_DEVICE",
+           charlist_device_setting(settings, "speaker_device", "default")},
+          {~c"TRANSLATOR_MEET_INPUT",
+           charlist_device_setting(settings, "meet_input_device", default_meet_input)},
+          {~c"TRANSLATOR_MEET_OUTPUT",
+           charlist_device_setting(settings, "meet_output_device", default_meet_output)},
+          {~c"TRANSLATOR_ENDPOINTING_MS",
+           String.to_charlist("#{Map.get(settings, "endpointing_ms", 300)}")},
+          {~c"TRANSLATOR_MY_LANG", String.to_charlist(Map.get(settings, "my_language", "ru"))},
+          {~c"TRANSLATOR_THEIR_LANG",
+           String.to_charlist(Map.get(settings, "their_language", "en"))},
+          {~c"TRANSLATOR_TTS_ENABLED",
+           String.to_charlist(
+             if(Map.get(settings, "text_only_mode", false), do: "false", else: "true")
+           )},
+          {~c"TRANSLATOR_TRANSLATION_ENABLED",
+           String.to_charlist(
+             if(Map.get(settings, "transcript_only_mode", false), do: "false", else: "true")
+           )},
+          {~c"TRANSLATOR_TTS_PROVIDER",
+           String.to_charlist(Map.get(settings, "tts_provider", "piper"))},
+          {~c"TRANSLATOR_DEBUG_LOG", String.to_charlist(Path.join(root, "engine-debug.log"))},
+          {~c"TRANSLATOR_MODELS_DIR", String.to_charlist(models_base)},
+          {~c"ORT_DYLIB_PATH", String.to_charlist(ort_path)},
+          {~c"PATH", String.to_charlist(runtime_path(ort_path, engine_path, root))}
+        ] ++ optional_env_charlists(["ESPEAK_NG_PATH", "ESPEAK_DATA_PATH", "ESPEAKNG_DATA_PATH"])
 
       try do
         executable_path =
@@ -313,15 +337,42 @@ defmodule Translator.AudioEngine do
     else
       Logger.warning(
         "AudioEngine binary not found at #{inspect(engine_path)}. " <>
-          "Run `mix compile` to build the Rust binary."
+          "Set TRANSLATOR_AUDIO_ENGINE_PATH or run `mix compile` to build the Rust binary."
       )
 
       {:error, :binary_not_found}
     end
   end
 
+  defp app_root do
+    case System.get_env("TRANSLATOR_APP_ROOT") do
+      nil -> File.cwd!()
+      "" -> File.cwd!()
+      root -> Path.expand(root)
+    end
+  end
+
+  defp engine_path(root) do
+    path =
+      System.get_env("TRANSLATOR_AUDIO_ENGINE_PATH") ||
+        Application.get_env(:translator, :audio_engine_path)
+
+    expand_app_path(path, root)
+  end
+
+  defp expand_app_path(nil, _root), do: nil
+
+  defp expand_app_path(path, root) do
+    path = to_string(path)
+
+    case Path.type(path) do
+      :absolute -> Path.expand(path)
+      _ -> Path.expand(path, root)
+    end
+  end
+
   defp read_settings do
-    settings_path = Path.join(File.cwd!(), "settings.json")
+    settings_path = Path.join(app_root(), "settings.json")
 
     case File.read(settings_path) do
       {:ok, contents} ->
@@ -333,6 +384,18 @@ defmodule Translator.AudioEngine do
       _ ->
         %{}
     end
+  end
+
+  defp runtime_config do
+    read_settings()
+    |> stringify_keys()
+    |> Map.merge(Translator.Config.get_all() |> stringify_keys())
+  end
+
+  defp stringify_keys(map) when is_map(map) do
+    map
+    |> Enum.map(fn {key, value} -> {to_string(key), value} end)
+    |> Map.new()
   end
 
   defp default_voice(models_base, lang) do
@@ -376,15 +439,19 @@ defmodule Translator.AudioEngine do
     end
   end
 
-  defp runtime_path(ort_path) do
+  defp runtime_path(ort_path, engine_path, root) do
     case :os.type() do
       {:win32, _} ->
         [
           Path.dirname(ort_path),
-          Path.join(File.cwd!(), "native/audio_engine/target/release"),
+          if(engine_path, do: Path.dirname(engine_path)),
+          Path.join(root, "bin"),
           System.get_env("ESPEAK_BIN_PATH"),
+          System.get_env("ESPEAKNG_BIN_PATH"),
+          Path.join(root, "espeak-ng"),
           "C:/Program Files/eSpeak NG",
-          "C:/Windows/System32"
+          "C:/Windows/System32",
+          System.get_env("PATH", "")
         ]
         |> Enum.reject(&(&1 in [nil, ""]))
         |> Enum.uniq()
@@ -418,6 +485,17 @@ defmodule Translator.AudioEngine do
       end
 
     String.to_charlist(value)
+  end
+
+  defp optional_env_charlists(names) do
+    names
+    |> Enum.flat_map(fn name ->
+      case System.get_env(name) do
+        nil -> []
+        "" -> []
+        value -> [{String.to_charlist(name), String.to_charlist(value)}]
+      end
+    end)
   end
 
   defp send_to_port(port, command) when is_port(port) do
@@ -455,7 +533,7 @@ defmodule Translator.AudioEngine do
          %{"event" => "transcript", "direction" => direction, "text" => text} = event,
          state
        ) do
-    line = "🎤 [#{direction}] #{text}"
+    line = "🎤 [#{speaker_label(direction)} #{direction}] #{text}"
     Logger.info(line)
     log_to_file(line)
     notify_pipeline(direction, event)
@@ -466,7 +544,7 @@ defmodule Translator.AudioEngine do
          %{"event" => "translation", "direction" => direction, "text" => text} = event,
          state
        ) do
-    line = "🌐 [#{direction}] #{text}"
+    line = "🌐 [#{speaker_label(direction)} #{direction}] #{text}"
     Logger.info(line)
     log_to_file(line)
     notify_pipeline(direction, event)
@@ -488,7 +566,8 @@ defmodule Translator.AudioEngine do
     Logger.error("Engine error: #{message}")
     log_to_file("✖ Engine error: #{message}")
 
-    if state.port && state.status in [:starting, :running] && String.contains?(message, "pipeline failed") do
+    if state.port && state.status in [:starting, :running] &&
+         String.contains?(message, "pipeline failed") do
       log_to_file("→ Port stop (auto after pipeline error)")
       send_to_port(state.port, %{"cmd" => "stop"})
     end
@@ -541,6 +620,7 @@ defmodule Translator.AudioEngine do
     if length(queue) > 5 do
       Process.put(:audio_queue, Enum.take(queue, -5))
     end
+
     state
   end
 
@@ -572,9 +652,13 @@ defmodule Translator.AudioEngine do
     ArgumentError -> nil
   end
 
+  defp speaker_label("outgoing"), do: "S1"
+  defp speaker_label("incoming"), do: "S2"
+  defp speaker_label(_direction), do: "S?"
+
   defp log_to_file(line) do
     timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
-    File.write(@log_file, "[#{timestamp}] #{line}\n", [:append])
+    File.write(Path.join(app_root(), @log_file), "[#{timestamp}] #{line}\n", [:append])
   end
 
   defp encode_config(config) when is_map(config) do

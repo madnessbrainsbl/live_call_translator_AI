@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Commands sent from Elixir to Rust.
 #[derive(Debug, Deserialize)]
@@ -14,6 +15,8 @@ pub enum Command {
     Ping,
     Start {
         pipelines: Vec<String>,
+        #[serde(default)]
+        config: Option<std::collections::HashMap<String, Value>>,
     },
     Stop,
     SetConfig {

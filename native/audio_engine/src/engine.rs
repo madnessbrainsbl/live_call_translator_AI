@@ -4,10 +4,11 @@
 //!   OUTGOING: Mic -> Deepgram(ru) -> Translate(ru->en) -> TTS(en) -> Speakers
 //!   INCOMING: Call audio input -> Deepgram(en) -> Translate(en->ru) -> TTS(ru) -> Speakers
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::{bounded, Sender};
@@ -16,13 +17,48 @@ use log::{error, info, warn};
 use crate::audio;
 use crate::audio::capture::{
     input_device_exists, is_system_loopback_device, output_loopback_device_exists, AudioCapture,
-    AudioChunk, SYSTEM_LOOPBACK_DEVICE,
+    AudioChunk,
 };
 use crate::audio::playback::AudioPlayback;
 use crate::protocol::Event;
 use crate::stt::DeepgramStt;
 use crate::translation::{TranslationDirection, TranslationEngine};
 use crate::tts::TtsEngine;
+
+const CONFIG_DEEPGRAM_API_KEY: &str = "deepgram_api_key";
+const CONFIG_GROQ_API_KEY: &str = "groq_api_key";
+const CONFIG_MIC_DEVICE: &str = "mic_device";
+const CONFIG_SPEAKER_DEVICE: &str = "speaker_device";
+const CONFIG_MEET_INPUT_DEVICE: &str = "meet_input_device";
+const CONFIG_MEET_OUTPUT_DEVICE: &str = "meet_output_device";
+const CONFIG_ENDPOINTING_MS: &str = "endpointing_ms";
+const CONFIG_MY_LANGUAGE: &str = "my_language";
+const CONFIG_THEIR_LANGUAGE: &str = "their_language";
+const CONFIG_TEXT_ONLY_MODE: &str = "text_only_mode";
+const CONFIG_TRANSCRIPT_ONLY_MODE: &str = "transcript_only_mode";
+const CONFIG_TRANSLATION_ENABLED: &str = "translation_enabled";
+const CONFIG_TTS_ENABLED: &str = "tts_enabled";
+const CONFIG_TTS_PROVIDER: &str = "tts_provider";
+const CONFIG_SAMPLE_RATE: &str = "sample_rate";
+const INCOMING_ENDPOINTING_FLOOR_MS: u32 = 900;
+const OUTGOING_MERGE_SILENCE_MS: u64 = 2_200;
+const INCOMING_MERGE_SILENCE_MS: u64 = 4_200;
+const OUTGOING_SHORT_MERGE_SILENCE_MS: u64 = 650;
+const INCOMING_SHORT_MERGE_SILENCE_MS: u64 = 900;
+const MAX_MERGE_POLL_MS: u64 = 250;
+const OUTGOING_INCOMPLETE_MERGE_SILENCE_MS: u64 = 4_500;
+const INCOMING_INCOMPLETE_MERGE_SILENCE_MS: u64 = 7_000;
+const SHORT_COMPLETE_UTTERANCE_MAX_WORDS: usize = 3;
+const MAX_WEAK_INCOMING_FRAGMENT_WORDS: usize = 8;
+const INCOMING_ACTIVITY_RMS: f32 = 0.006;
+const INCOMING_ACTIVITY_PEAK: f32 = 0.025;
+const INCOMING_ACTIVITY_HANGOVER_MS: u64 = 1_100;
+const OUTGOING_MIC_RMS: f32 = 0.010;
+const OUTGOING_MIC_PEAK: f32 = 0.035;
+const OUTGOING_MIC_HANGOVER_MS: u64 = 650;
+const OUTGOING_BLEED_RMS: f32 = 0.003;
+const OUTGOING_BLEED_PEAK: f32 = 0.012;
+const AUDIO_DROP_DEBUG_INTERVAL_MS: u64 = 1_000;
 
 fn debug_log(message: &str) {
     let path = match std::env::var("TRANSLATOR_DEBUG_LOG") {
@@ -60,6 +96,7 @@ pub struct EngineConfig {
     pub my_language: String,
     pub their_language: String,
     pub tts_enabled: bool,
+    pub translation_enabled: bool,
     pub tts_provider: String,
 }
 
@@ -105,6 +142,14 @@ impl EngineConfig {
                     )
                 })
                 .unwrap_or(true),
+            translation_enabled: std::env::var("TRANSLATOR_TRANSLATION_ENABLED")
+                .map(|s| {
+                    !matches!(
+                        s.to_ascii_lowercase().as_str(),
+                        "0" | "false" | "no" | "off"
+                    )
+                })
+                .unwrap_or(true),
             tts_provider: std::env::var("TRANSLATOR_TTS_PROVIDER")
                 .unwrap_or_else(|_| "piper".into())
                 .to_ascii_lowercase(),
@@ -130,6 +175,26 @@ fn default_sample_rate() -> u32 {
     }
 }
 
+fn json_string(value: &serde_json::Value) -> Option<String> {
+    value.as_str().map(|v| v.trim().to_string())
+}
+
+fn json_u32(value: &serde_json::Value) -> Option<u32> {
+    if let Some(v) = value.as_u64() {
+        return u32::try_from(v).ok();
+    }
+
+    value.as_str()?.trim().parse::<u32>().ok()
+}
+
+fn normalized_tts_provider(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "edge" => "edge".into(),
+        "browser" => "browser".into(),
+        _ => "piper".into(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
@@ -150,6 +215,7 @@ pub struct Engine {
     mute_outgoing: Arc<AtomicBool>,
     mute_incoming: Arc<AtomicBool>,
     tts_enabled: Arc<AtomicBool>,
+    translation_enabled: Arc<AtomicBool>,
     browser_monitor_enabled: Arc<AtomicBool>,
     recent_tts: Arc<Mutex<Vec<RecentTts>>>,
 }
@@ -164,6 +230,7 @@ struct RecentTts {
 impl Engine {
     pub fn new(config: EngineConfig, event_tx: Sender<Event>) -> Self {
         let tts_enabled = config.tts_enabled;
+        let translation_enabled = config.translation_enabled;
         Self {
             state: EngineState::Idle,
             config,
@@ -173,6 +240,7 @@ impl Engine {
             mute_outgoing: Arc::new(AtomicBool::new(false)),
             mute_incoming: Arc::new(AtomicBool::new(false)),
             tts_enabled: Arc::new(AtomicBool::new(tts_enabled)),
+            translation_enabled: Arc::new(AtomicBool::new(translation_enabled)),
             browser_monitor_enabled: Arc::new(AtomicBool::new(false)),
             recent_tts: Arc::new(Mutex::new(Vec::new())),
         }
@@ -188,7 +256,7 @@ impl Engine {
         match cmd {
             Command::Ping => vec![Event::Pong],
 
-            Command::Start { pipelines } => {
+            Command::Start { pipelines, config } => {
                 if self.state == EngineState::Running {
                     return vec![
                         Event::Log {
@@ -199,6 +267,10 @@ impl Engine {
                             pipelines: pipelines.clone(),
                         },
                     ];
+                }
+
+                if let Some(config) = config.as_ref() {
+                    self.apply_start_config(config);
                 }
 
                 if let Err(e) = audio::list_devices() {
@@ -369,11 +441,100 @@ impl Engine {
         }
     }
 
+    fn apply_start_config(&mut self, config: &HashMap<String, serde_json::Value>) {
+        for (key, value) in config {
+            match key.as_str() {
+                CONFIG_DEEPGRAM_API_KEY => {
+                    if let Some(v) = json_string(value) {
+                        self.config.deepgram_api_key = v;
+                    }
+                }
+                CONFIG_GROQ_API_KEY => {
+                    if let Some(v) = json_string(value) {
+                        self.config.groq_api_key = v;
+                    }
+                }
+                CONFIG_MIC_DEVICE => {
+                    if let Some(v) = json_string(value) {
+                        self.config.mic_device = v;
+                    }
+                }
+                CONFIG_SPEAKER_DEVICE => {
+                    if let Some(v) = json_string(value) {
+                        self.config.speaker_device = v;
+                    }
+                }
+                CONFIG_MEET_INPUT_DEVICE => {
+                    if let Some(v) = json_string(value) {
+                        self.config.meet_input_device = v;
+                    }
+                }
+                CONFIG_MEET_OUTPUT_DEVICE => {
+                    if let Some(v) = json_string(value) {
+                        self.config.meet_output_device = v;
+                    }
+                }
+                CONFIG_ENDPOINTING_MS => {
+                    if let Some(v) = json_u32(value) {
+                        self.config.endpointing_ms = v;
+                    }
+                }
+                CONFIG_MY_LANGUAGE => {
+                    if let Some(v) = json_string(value) {
+                        self.config.my_language = v;
+                    }
+                }
+                CONFIG_THEIR_LANGUAGE => {
+                    if let Some(v) = json_string(value) {
+                        self.config.their_language = v;
+                    }
+                }
+                CONFIG_TEXT_ONLY_MODE => {
+                    if let Some(text_only) = value.as_bool() {
+                        let enabled = !text_only;
+                        self.config.tts_enabled = enabled;
+                        self.tts_enabled.store(enabled, Ordering::SeqCst);
+                    }
+                }
+                CONFIG_TRANSCRIPT_ONLY_MODE => {
+                    if let Some(transcript_only) = value.as_bool() {
+                        let enabled = !transcript_only;
+                        self.config.translation_enabled = enabled;
+                        self.translation_enabled.store(enabled, Ordering::SeqCst);
+                    }
+                }
+                CONFIG_TRANSLATION_ENABLED => {
+                    if let Some(enabled) = value.as_bool() {
+                        self.config.translation_enabled = enabled;
+                        self.translation_enabled.store(enabled, Ordering::SeqCst);
+                    }
+                }
+                CONFIG_TTS_ENABLED => {
+                    if let Some(enabled) = value.as_bool() {
+                        self.config.tts_enabled = enabled;
+                        self.tts_enabled.store(enabled, Ordering::SeqCst);
+                    }
+                }
+                CONFIG_TTS_PROVIDER => {
+                    if let Some(v) = json_string(value) {
+                        self.config.tts_provider = normalized_tts_provider(&v);
+                    }
+                }
+                CONFIG_SAMPLE_RATE => {
+                    if let Some(v) = json_u32(value) {
+                        self.config.sample_rate = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn apply_config(&mut self, key: &str, value: &serde_json::Value) {
         match key {
-            "endpointing_ms" => {
-                if let Some(v) = value.as_u64() {
-                    self.config.endpointing_ms = v as u32;
+            CONFIG_ENDPOINTING_MS => {
+                if let Some(v) = json_u32(value) {
+                    self.config.endpointing_ms = v;
                     info!("Updated endpointing_ms to {}", v);
                 }
             }
@@ -393,14 +554,15 @@ impl Engine {
                 self.tts_enabled.store(enabled, Ordering::SeqCst);
                 info!("TTS enabled: {}", enabled);
             }
-            "tts_provider" => {
+            CONFIG_TRANSLATION_ENABLED => {
+                let enabled = value.as_bool().unwrap_or(true);
+                self.config.translation_enabled = enabled;
+                self.translation_enabled.store(enabled, Ordering::SeqCst);
+                info!("Translation enabled: {}", enabled);
+            }
+            CONFIG_TTS_PROVIDER => {
                 if let Some(v) = value.as_str() {
-                    let provider = v.to_ascii_lowercase();
-                    self.config.tts_provider = if provider == "edge" || provider == "browser" {
-                        provider
-                    } else {
-                        "piper".into()
-                    };
+                    self.config.tts_provider = normalized_tts_provider(v);
                     info!("TTS provider: {}", self.config.tts_provider);
                 }
             }
@@ -420,19 +582,28 @@ impl Engine {
         let stop_flag = Arc::new(AtomicBool::new(false));
         self.stop_flag = Some(stop_flag.clone());
 
-        info!("Loading translation models...");
-        let translator = Arc::new(
-            TranslationEngine::new(&self.config.groq_api_key)
-                .context("Failed to initialize translation engine")?,
-        );
-
-        let tts_provider = if self.config.tts_provider == "edge" || self.config.tts_provider == "browser" {
-            self.config.tts_provider.as_str()
+        let translation_enabled = self.translation_enabled.load(Ordering::SeqCst);
+        let translator = if translation_enabled || !self.config.groq_api_key.trim().is_empty() {
+            info!("Loading translation models...");
+            Arc::new(
+                TranslationEngine::new(&self.config.groq_api_key)
+                    .context("Failed to initialize translation engine")?,
+            )
         } else {
-            "piper"
+            Arc::new(TranslationEngine::disabled())
         };
+
+        let tts_provider =
+            if self.config.tts_provider == "edge" || self.config.tts_provider == "browser" {
+                self.config.tts_provider.as_str()
+            } else {
+                "piper"
+            };
         let mut tts_out = if tts_provider != "piper" {
-            info!("External TTS provider '{}' selected; skipping Piper model load.", tts_provider);
+            info!(
+                "External TTS provider '{}' selected; skipping Piper model load.",
+                tts_provider
+            );
             Some(None)
         } else {
             info!("Loading TTS models...");
@@ -460,22 +631,20 @@ impl Engine {
 
         info!("All models loaded, spawning pipelines...");
 
+        let wants_outgoing = pipelines.iter().any(|pipeline| pipeline == "outgoing");
+        let wants_incoming = pipelines.iter().any(|pipeline| pipeline == "incoming");
+        let dual_channel_mode = wants_outgoing && wants_incoming;
+        let incoming_audio_active_until = Arc::new(AtomicU64::new(0));
+
         for pipeline_name in pipelines {
             match pipeline_name.as_str() {
                 "outgoing" => {
                     let tts = tts_out.take().expect("outgoing TTS already taken");
-                    let capture_device = if input_device_exists(&self.config.mic_device) {
-                        self.config.mic_device.clone()
-                    } else {
-                        info!(
-                            "No microphone input found; using system output loopback for outgoing capture"
-                        );
-                        SYSTEM_LOOPBACK_DEVICE.to_string()
-                    };
+                    let capture_device = self.config.mic_device.clone();
                     let stt = DeepgramStt::new(
                         self.config.deepgram_api_key.clone(),
                         self.config.my_language.clone(),
-                        self.config.endpointing_ms,
+                        endpointing_ms_for_direction("outgoing", self.config.endpointing_ms),
                     );
                     let handle = spawn_pipeline(
                         "outgoing",
@@ -495,8 +664,11 @@ impl Engine {
                         stop_flag.clone(),
                         self.mute_outgoing.clone(),
                         self.tts_enabled.clone(),
+                        self.translation_enabled.clone(),
                         self.browser_monitor_enabled.clone(),
                         self.recent_tts.clone(),
+                        dual_channel_mode,
+                        incoming_audio_active_until.clone(),
                         tts_provider.to_string(),
                     )?;
                     self.pipeline_handles.push(handle);
@@ -506,7 +678,7 @@ impl Engine {
                     let stt = DeepgramStt::new(
                         self.config.deepgram_api_key.clone(),
                         self.config.their_language.clone(),
-                        self.config.endpointing_ms,
+                        endpointing_ms_for_direction("incoming", self.config.endpointing_ms),
                     );
                     let handle = spawn_pipeline(
                         "incoming",
@@ -526,8 +698,11 @@ impl Engine {
                         stop_flag.clone(),
                         self.mute_incoming.clone(),
                         self.tts_enabled.clone(),
+                        self.translation_enabled.clone(),
                         self.browser_monitor_enabled.clone(),
                         self.recent_tts.clone(),
+                        dual_channel_mode,
+                        incoming_audio_active_until.clone(),
                         tts_provider.to_string(),
                     )?;
                     self.pipeline_handles.push(handle);
@@ -544,8 +719,12 @@ impl Engine {
         let wants_incoming = pipelines.iter().any(|p| p == "incoming");
 
         if wants_outgoing && !input_device_exists(&self.config.mic_device) {
-            if !output_loopback_device_exists(&self.config.speaker_device) {
-                bail!("No microphone input. Use System Audio or connect a microphone.");
+            if is_system_loopback_device(&self.config.mic_device) {
+                if !output_loopback_device_exists(&self.config.speaker_device) {
+                    bail!("No output device available for system loopback capture.");
+                }
+            } else {
+                bail!("No microphone input. Turn on Monitor or connect a microphone.");
             }
         }
 
@@ -604,8 +783,11 @@ fn spawn_pipeline(
     stop_flag: Arc<AtomicBool>,
     mute_flag: Arc<AtomicBool>,
     tts_enabled: Arc<AtomicBool>,
+    translation_enabled: Arc<AtomicBool>,
     browser_monitor_enabled: Arc<AtomicBool>,
     recent_tts: Arc<Mutex<Vec<RecentTts>>>,
+    dual_channel_mode: bool,
+    incoming_audio_active_until: Arc<AtomicU64>,
     tts_provider: String,
 ) -> Result<thread::JoinHandle<()>> {
     let dir_name = direction.to_string();
@@ -629,8 +811,11 @@ fn spawn_pipeline(
                 &stop_flag,
                 &mute_flag,
                 &tts_enabled,
+                &translation_enabled,
                 &browser_monitor_enabled,
                 recent_tts,
+                dual_channel_mode,
+                incoming_audio_active_until,
                 &tts_provider,
             ) {
                 error!("{} pipeline failed: {:#}", dir_name, e);
@@ -665,8 +850,11 @@ fn run_pipeline(
     stop_flag: &AtomicBool,
     mute_flag: &AtomicBool,
     tts_enabled: &Arc<AtomicBool>,
+    translation_enabled: &Arc<AtomicBool>,
     browser_monitor_enabled: &Arc<AtomicBool>,
     recent_tts: Arc<Mutex<Vec<RecentTts>>>,
+    dual_channel_mode: bool,
+    incoming_audio_active_until: Arc<AtomicU64>,
     tts_provider: &str,
 ) -> Result<()> {
     info!(
@@ -723,6 +911,7 @@ fn run_pipeline(
     let proc_sample_rate = sample_rate;
     let proc_recent_tts = recent_tts.clone();
     let proc_tts_enabled = tts_enabled.clone();
+    let proc_translation_enabled = translation_enabled.clone();
     let proc_browser_monitor_enabled = browser_monitor_enabled.clone();
     let proc_tts_provider = tts_provider.to_string();
     let proc_echo_suppress = echo_suppress.clone();
@@ -737,7 +926,15 @@ fn run_pipeline(
     }
     let _proc_handle = std::thread::spawn(move || {
         while let Ok((text, stt_ms)) = proc_rx.recv() {
-            let (merged_text, merged_stt_ms) = merge_neighboring_chunks(text, stt_ms, &proc_rx);
+            let (merged_text, merged_stt_ms) =
+                merge_neighboring_chunks(text, stt_ms, &proc_rx, &proc_direction);
+            if should_drop_standalone_fragment(&merged_text, &proc_direction) {
+                info!(
+                    "[{}] Dropping standalone STT fragment: '{}'",
+                    proc_direction, merged_text
+                );
+                continue;
+            }
             let _audio_len = process_utterance(
                 &proc_direction,
                 &merged_text,
@@ -750,6 +947,7 @@ fn run_pipeline(
                 &proc_playback_tx,
                 &proc_event_tx,
                 &proc_tts_enabled,
+                &proc_translation_enabled,
                 &proc_browser_monitor_enabled,
                 &proc_echo_suppress,
                 &proc_echo_suppress_token,
@@ -765,6 +963,9 @@ fn run_pipeline(
         direction, capture_rate, stt_sample_rate
     );
 
+    let mut last_strong_outgoing_audio = None;
+    let mut audio_drop_debug_at = HashMap::new();
+
     loop {
         if stop_flag.load(Ordering::SeqCst) {
             info!("[{}] Stop flag set, exiting", direction);
@@ -774,9 +975,66 @@ fn run_pipeline(
         match audio_rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(chunk) => {
                 if mute_flag.load(Ordering::Relaxed) {
+                    debug_audio_drop(
+                        direction,
+                        AudioDropReason::Muted,
+                        &chunk.samples,
+                        &mut audio_drop_debug_at,
+                    );
+                    if !ensure_deepgram_keepalive(
+                        direction,
+                        &stt,
+                        stt_sample_rate,
+                        event_tx,
+                        &mut session,
+                    ) {
+                        break;
+                    }
                     continue;
                 }
+                note_incoming_audio_activity(
+                    direction,
+                    dual_channel_mode,
+                    &chunk.samples,
+                    &incoming_audio_active_until,
+                );
                 if echo_suppress.load(Ordering::SeqCst) {
+                    debug_audio_drop(
+                        direction,
+                        AudioDropReason::EchoSuppressed,
+                        &chunk.samples,
+                        &mut audio_drop_debug_at,
+                    );
+                    if !ensure_deepgram_keepalive(
+                        direction,
+                        &stt,
+                        stt_sample_rate,
+                        event_tx,
+                        &mut session,
+                    ) {
+                        break;
+                    }
+                    continue;
+                }
+                if let Some(reason) = should_drop_outgoing_audio(
+                    direction,
+                    dual_channel_mode,
+                    &chunk.samples,
+                    &incoming_audio_active_until,
+                    &mut last_strong_outgoing_audio,
+                ) {
+                    debug_audio_drop(direction, reason, &chunk.samples, &mut audio_drop_debug_at);
+                    if drop_requires_keepalive(reason)
+                        && !ensure_deepgram_keepalive(
+                            direction,
+                            &stt,
+                            stt_sample_rate,
+                            event_tx,
+                            &mut session,
+                        )
+                    {
+                        break;
+                    }
                     continue;
                 }
                 let samples_16k = resample(&chunk.samples, capture_rate, stt_sample_rate);
@@ -803,34 +1061,14 @@ fn run_pipeline(
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                if let Err(e) = session.send_keepalive_if_idle() {
-                    if is_reconnectable_deepgram_error(&e) {
-                        match reconnect_deepgram(direction, &stt, stt_sample_rate, event_tx) {
-                            Ok(new_session) => {
-                                session = new_session;
-                                continue;
-                            }
-                            Err(reconnect_error) => {
-                                error!(
-                                    "[{}] Deepgram reconnect failed: {:#}",
-                                    direction, reconnect_error
-                                );
-                                let _ = event_tx.send(Event::Error {
-                                    message: format!(
-                                        "[{}] Deepgram reconnect failed: {:#}",
-                                        direction, reconnect_error
-                                    ),
-                                });
-                                break;
-                            }
-                        }
-                    } else {
-                        error!("[{}] Deepgram keepalive error: {:#}", direction, e);
-                        let _ = event_tx.send(Event::Error {
-                            message: format!("[{}] Deepgram keepalive error: {:#}", direction, e),
-                        });
-                        break;
-                    }
+                if !ensure_deepgram_keepalive(
+                    direction,
+                    &stt,
+                    stt_sample_rate,
+                    event_tx,
+                    &mut session,
+                ) {
+                    break;
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
@@ -897,6 +1135,157 @@ fn run_pipeline(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum AudioDropReason {
+    EchoSuppressed,
+    IncomingActive,
+    Muted,
+    QuietOutgoing,
+}
+
+impl AudioDropReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::EchoSuppressed => "echo-suppressed",
+            Self::IncomingActive => "incoming-active",
+            Self::Muted => "muted",
+            Self::QuietOutgoing => "quiet-outgoing",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AudioLevel {
+    rms: f32,
+    peak: f32,
+}
+
+fn audio_level(samples: &[f32]) -> AudioLevel {
+    if samples.is_empty() {
+        return AudioLevel {
+            rms: 0.0,
+            peak: 0.0,
+        };
+    }
+
+    let mut sum_squares = 0.0_f32;
+    let mut peak = 0.0_f32;
+    for sample in samples {
+        let abs = sample.abs();
+        sum_squares += sample * sample;
+        if abs > peak {
+            peak = abs;
+        }
+    }
+
+    AudioLevel {
+        rms: (sum_squares / samples.len() as f32).sqrt(),
+        peak,
+    }
+}
+
+fn above_audio_gate(level: AudioLevel, rms_threshold: f32, peak_threshold: f32) -> bool {
+    level.rms >= rms_threshold || level.peak >= peak_threshold
+}
+
+fn below_audio_gate(level: AudioLevel, rms_threshold: f32, peak_threshold: f32) -> bool {
+    level.rms < rms_threshold && level.peak < peak_threshold
+}
+
+fn monotonic_wall_clock_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn note_incoming_audio_activity(
+    direction: &str,
+    dual_channel_mode: bool,
+    samples: &[f32],
+    incoming_audio_active_until: &AtomicU64,
+) {
+    if !dual_channel_mode || direction != "incoming" {
+        return;
+    }
+
+    let level = audio_level(samples);
+    if above_audio_gate(level, INCOMING_ACTIVITY_RMS, INCOMING_ACTIVITY_PEAK) {
+        incoming_audio_active_until.store(
+            monotonic_wall_clock_ms().saturating_add(INCOMING_ACTIVITY_HANGOVER_MS),
+            Ordering::SeqCst,
+        );
+    }
+}
+
+fn should_drop_outgoing_audio(
+    direction: &str,
+    dual_channel_mode: bool,
+    samples: &[f32],
+    incoming_audio_active_until: &AtomicU64,
+    last_strong_outgoing_audio: &mut Option<Instant>,
+) -> Option<AudioDropReason> {
+    if !dual_channel_mode || direction != "outgoing" {
+        return None;
+    }
+
+    let level = audio_level(samples);
+    if above_audio_gate(level, OUTGOING_MIC_RMS, OUTGOING_MIC_PEAK) {
+        *last_strong_outgoing_audio = Some(Instant::now());
+        return None;
+    }
+
+    if let Some(last_seen) = last_strong_outgoing_audio {
+        if last_seen.elapsed() <= Duration::from_millis(OUTGOING_MIC_HANGOVER_MS) {
+            return None;
+        }
+    }
+
+    if monotonic_wall_clock_ms() > incoming_audio_active_until.load(Ordering::SeqCst) {
+        return None;
+    }
+
+    if below_audio_gate(level, OUTGOING_BLEED_RMS, OUTGOING_BLEED_PEAK) {
+        return Some(AudioDropReason::QuietOutgoing);
+    }
+
+    Some(AudioDropReason::IncomingActive)
+}
+
+fn drop_requires_keepalive(reason: AudioDropReason) -> bool {
+    matches!(
+        reason,
+        AudioDropReason::EchoSuppressed
+            | AudioDropReason::IncomingActive
+            | AudioDropReason::Muted
+            | AudioDropReason::QuietOutgoing
+    )
+}
+
+fn debug_audio_drop(
+    direction: &str,
+    reason: AudioDropReason,
+    samples: &[f32],
+    last_debug_at: &mut HashMap<AudioDropReason, Instant>,
+) {
+    let now = Instant::now();
+    if let Some(last) = last_debug_at.get(&reason) {
+        if now.duration_since(*last) < Duration::from_millis(AUDIO_DROP_DEBUG_INTERVAL_MS) {
+            return;
+        }
+    }
+
+    last_debug_at.insert(reason, now);
+    let level = audio_level(samples);
+    debug_log(&format!(
+        "[{}] audio-drop reason={} rms={:.5} peak={:.5}",
+        direction,
+        reason.as_str(),
+        level.rms,
+        level.peak
+    ));
+}
+
 fn is_reconnectable_deepgram_error(error: &anyhow::Error) -> bool {
     let message = format!("{:#}", error).to_ascii_lowercase();
     message.contains("connection closed")
@@ -904,6 +1293,46 @@ fn is_reconnectable_deepgram_error(error: &anyhow::Error) -> bool {
         || message.contains("reset without closing handshake")
         || message.contains("connection reset")
         || message.contains("broken pipe")
+}
+
+fn ensure_deepgram_keepalive(
+    direction: &str,
+    stt: &DeepgramStt,
+    sample_rate: u32,
+    event_tx: &Sender<Event>,
+    session: &mut crate::stt::DeepgramSession,
+) -> bool {
+    if let Err(e) = session.send_keepalive_if_idle() {
+        if is_reconnectable_deepgram_error(&e) {
+            match reconnect_deepgram(direction, stt, sample_rate, event_tx) {
+                Ok(new_session) => {
+                    *session = new_session;
+                    return true;
+                }
+                Err(reconnect_error) => {
+                    error!(
+                        "[{}] Deepgram reconnect failed: {:#}",
+                        direction, reconnect_error
+                    );
+                    let _ = event_tx.send(Event::Error {
+                        message: format!(
+                            "[{}] Deepgram reconnect failed: {:#}",
+                            direction, reconnect_error
+                        ),
+                    });
+                    return false;
+                }
+            }
+        }
+
+        error!("[{}] Deepgram keepalive error: {:#}", direction, e);
+        let _ = event_tx.send(Event::Error {
+            message: format!("[{}] Deepgram keepalive error: {:#}", direction, e),
+        });
+        return false;
+    }
+
+    true
 }
 
 fn reconnect_deepgram(
@@ -943,6 +1372,7 @@ fn process_utterance(
     playback_tx: &Sender<Vec<f32>>,
     event_tx: &Sender<Event>,
     tts_enabled: &AtomicBool,
+    translation_enabled: &AtomicBool,
     browser_monitor_enabled: &AtomicBool,
     echo_suppress: &Arc<AtomicBool>,
     echo_suppress_token: &Arc<AtomicU64>,
@@ -959,8 +1389,9 @@ fn process_utterance(
     });
 
     let translate_start = Instant::now();
+    let translation_is_disabled = !translation_enabled.load(Ordering::SeqCst);
     let same_language = translate_direction.from_code == translate_direction.to_code;
-    let translated = if same_language {
+    let translated = if translation_is_disabled || same_language {
         text.trim().to_string()
     } else {
         match translator.translate(text, translate_direction) {
@@ -974,7 +1405,11 @@ fn process_utterance(
             }
         }
     };
-    let translate_ms = translate_start.elapsed().as_millis() as u64;
+    let translate_ms = if translation_is_disabled {
+        0
+    } else {
+        translate_start.elapsed().as_millis() as u64
+    };
 
     info!("[{}] Translation: '{}'", direction, translated);
     let _ = event_tx.send(Event::Translation {
@@ -983,6 +1418,19 @@ fn process_utterance(
     });
 
     if translated.trim().is_empty() {
+        return 0;
+    }
+
+    if translation_is_disabled {
+        info!(
+            "[{}] Translation disabled, skipping TTS playback",
+            direction
+        );
+        let _ = event_tx.send(Event::Metrics {
+            stt_ms,
+            translate_ms,
+            tts_ms: 0,
+        });
         return 0;
     }
 
@@ -1140,9 +1588,10 @@ fn merge_neighboring_chunks(
     mut text: String,
     mut stt_ms: u64,
     proc_rx: &crossbeam_channel::Receiver<(String, u64)>,
+    direction: &str,
 ) -> (String, u64) {
-    const UTTERANCE_SILENCE_MS: u64 = 2_000;
-    let mut merge_deadline = Instant::now() + Duration::from_millis(UTTERANCE_SILENCE_MS);
+    let mut merge_deadline =
+        Instant::now() + Duration::from_millis(merge_wait_ms(direction, &text));
 
     loop {
         let now = Instant::now();
@@ -1151,12 +1600,13 @@ fn merge_neighboring_chunks(
         }
 
         let wait = merge_deadline.saturating_duration_since(now);
-        match proc_rx.recv_timeout(wait.min(Duration::from_millis(250))) {
+        match proc_rx.recv_timeout(wait.min(Duration::from_millis(MAX_MERGE_POLL_MS))) {
             Ok((next_text, next_stt_ms)) => {
                 if !next_text.trim().is_empty() {
                     text = merge_texts(&text, &next_text);
                     stt_ms = stt_ms.max(next_stt_ms);
-                    merge_deadline = Instant::now() + Duration::from_millis(UTTERANCE_SILENCE_MS);
+                    merge_deadline =
+                        Instant::now() + Duration::from_millis(merge_wait_ms(direction, &text));
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
@@ -1165,6 +1615,236 @@ fn merge_neighboring_chunks(
     }
 
     (cleanup_repeated_word_spans(&text), stt_ms)
+}
+
+fn merge_wait_ms(direction: &str, text: &str) -> u64 {
+    if is_probably_incomplete_utterance(text) {
+        return incomplete_utterance_merge_silence_ms(direction);
+    }
+
+    if is_short_complete_utterance(text) {
+        return short_utterance_merge_silence_ms(direction);
+    }
+
+    base_utterance_merge_silence_ms(direction)
+}
+
+fn endpointing_ms_for_direction(direction: &str, configured_ms: u32) -> u32 {
+    if direction == "incoming" {
+        configured_ms.max(INCOMING_ENDPOINTING_FLOOR_MS)
+    } else {
+        configured_ms
+    }
+}
+
+fn base_utterance_merge_silence_ms(direction: &str) -> u64 {
+    if direction == "incoming" {
+        INCOMING_MERGE_SILENCE_MS
+    } else {
+        OUTGOING_MERGE_SILENCE_MS
+    }
+}
+
+fn incomplete_utterance_merge_silence_ms(direction: &str) -> u64 {
+    if direction == "incoming" {
+        INCOMING_INCOMPLETE_MERGE_SILENCE_MS
+    } else {
+        OUTGOING_INCOMPLETE_MERGE_SILENCE_MS
+    }
+}
+
+fn short_utterance_merge_silence_ms(direction: &str) -> u64 {
+    if direction == "incoming" {
+        INCOMING_SHORT_MERGE_SILENCE_MS
+    } else {
+        OUTGOING_SHORT_MERGE_SILENCE_MS
+    }
+}
+
+fn is_short_complete_utterance(text: &str) -> bool {
+    let normalized = normalize_text_for_match(text);
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    !words.is_empty() && words.len() <= SHORT_COMPLETE_UTTERANCE_MAX_WORDS
+}
+
+fn should_drop_standalone_fragment(text: &str, direction: &str) -> bool {
+    let normalized = normalize_text_for_match(text);
+    if normalized.is_empty() {
+        return true;
+    }
+
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    if _has_question_mark(text) {
+        return false;
+    }
+
+    if direction == "incoming" && is_weak_incoming_fragment(text, &words) {
+        return true;
+    }
+
+    if words.len() > 1 {
+        return false;
+    }
+
+    let word = words[0];
+    if is_allowed_short_answer(word) || is_likely_named_term(text) {
+        return false;
+    }
+
+    if direction == "incoming" {
+        return true;
+    }
+
+    word.chars().count() <= 3
+}
+
+fn is_allowed_short_answer(word: &str) -> bool {
+    matches!(
+        word,
+        "да" | "нет"
+            | "ок"
+            | "ага"
+            | "окей"
+            | "ладно"
+            | "готово"
+            | "понятно"
+            | "хорошо"
+            | "привет"
+            | "yes"
+            | "no"
+            | "ok"
+            | "okay"
+            | "done"
+            | "hello"
+            | "hi"
+            | "thanks"
+    )
+}
+
+fn is_weak_incoming_fragment(text: &str, words: &[&str]) -> bool {
+    if words.is_empty() {
+        return true;
+    }
+
+    if words.len() == 1 {
+        return !is_allowed_short_answer(words[0]) && !is_likely_named_term(text);
+    }
+
+    if words.len() <= 2 {
+        let repeated_short_words = words.iter().all(|word| word.chars().count() <= 3)
+            && words.windows(2).any(|pair| pair[0] == pair[1]);
+        if repeated_short_words || is_probably_incomplete_utterance(text) {
+            return true;
+        }
+    }
+
+    words.len() <= MAX_WEAK_INCOMING_FRAGMENT_WORDS && is_probably_incomplete_utterance(text)
+}
+
+fn is_probably_incomplete_utterance(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || _has_question_mark(trimmed) {
+        return false;
+    }
+
+    if trimmed.ends_with(',') || trimmed.ends_with(':') || trimmed.ends_with(';') {
+        return true;
+    }
+
+    let normalized = normalize_text_for_match(trimmed);
+    let Some(last_word) = normalized.split_whitespace().last() else {
+        return false;
+    };
+
+    is_hanging_tail_word(last_word)
+}
+
+fn _has_question_mark(text: &str) -> bool {
+    text.contains('?') || text.contains('؟') || text.contains('？')
+}
+
+fn is_hanging_tail_word(word: &str) -> bool {
+    matches!(
+        word,
+        "и" | "а"
+            | "но"
+            | "или"
+            | "если"
+            | "чтобы"
+            | "чтоб"
+            | "который"
+            | "которая"
+            | "которое"
+            | "которые"
+            | "что"
+            | "как"
+            | "когда"
+            | "где"
+            | "куда"
+            | "потому"
+            | "поскольку"
+            | "короче"
+            | "типа"
+            | "это"
+            | "этот"
+            | "эта"
+            | "эти"
+            | "такой"
+            | "такая"
+            | "такие"
+            | "всякой"
+            | "всякая"
+            | "всякие"
+            | "в"
+            | "во"
+            | "на"
+            | "по"
+            | "к"
+            | "ко"
+            | "с"
+            | "со"
+            | "из"
+            | "от"
+            | "до"
+            | "для"
+            | "про"
+            | "and"
+            | "but"
+            | "or"
+            | "if"
+            | "because"
+            | "that"
+            | "what"
+            | "how"
+            | "when"
+            | "where"
+            | "to"
+            | "of"
+            | "for"
+            | "with"
+            | "about"
+            | "the"
+            | "a"
+            | "an"
+    )
+}
+
+fn is_likely_named_term(text: &str) -> bool {
+    let token = text
+        .trim()
+        .trim_matches(|ch: char| !ch.is_alphanumeric())
+        .to_string();
+    if token.len() < 2 || !token.is_ascii() {
+        return false;
+    }
+
+    token.chars().any(|ch| ch.is_ascii_digit())
+        || token.chars().skip(1).any(|ch| ch.is_ascii_uppercase())
+        || token.chars().all(|ch| !ch.is_ascii_lowercase())
 }
 
 fn merge_texts(current: &str, next: &str) -> String {
@@ -1217,7 +1897,24 @@ fn merge_texts(current: &str, next: &str) -> String {
         }
     }
 
+    if current_words
+        .last()
+        .zip(next_words.first())
+        .is_some_and(|(left, right)| is_mergeable_single_word_overlap(left, right))
+    {
+        let next_original_words: Vec<&str> = next_trimmed.split_whitespace().collect();
+        let suffix = next_original_words.get(1..).unwrap_or(&[]).join(" ");
+        if suffix.is_empty() {
+            return current_trimmed.to_string();
+        }
+        return format!("{} {}", current_trimmed, suffix);
+    }
+
     format!("{} {}", current_trimmed, next_trimmed)
+}
+
+fn is_mergeable_single_word_overlap(left: &str, right: &str) -> bool {
+    left == right && left.chars().count() >= 3
 }
 
 fn cleanup_repeated_word_spans(text: &str) -> String {
@@ -1273,6 +1970,422 @@ fn normalize_text_for_match(text: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drops_noise_fragments_but_keeps_short_answers() {
+        assert!(should_drop_standalone_fragment("Я", "incoming"));
+        assert!(should_drop_standalone_fragment("это", "incoming"));
+        assert!(should_drop_standalone_fragment("The.", "incoming"));
+        assert!(!should_drop_standalone_fragment("да", "incoming"));
+        assert!(!should_drop_standalone_fragment("No", "incoming"));
+    }
+
+    #[test]
+    fn incoming_uses_longer_merge_window() {
+        assert!(
+            base_utterance_merge_silence_ms("incoming")
+                > base_utterance_merge_silence_ms("outgoing")
+        );
+    }
+
+    #[test]
+    fn incomplete_fragments_wait_longer_before_emitting() {
+        assert!(
+            merge_wait_ms("incoming", "Но я, наверное, короче,")
+                > base_utterance_merge_silence_ms("incoming")
+        );
+        assert!(
+            merge_wait_ms("incoming", "Мне нужно уточнить, а чтобы")
+                > base_utterance_merge_silence_ms("incoming")
+        );
+        assert_eq!(
+            merge_wait_ms("incoming", "Как твои дела?"),
+            INCOMING_SHORT_MERGE_SILENCE_MS
+        );
+    }
+
+    #[test]
+    fn short_complete_utterances_use_fast_merge_window() {
+        assert_eq!(
+            merge_wait_ms("outgoing", "Привет."),
+            OUTGOING_SHORT_MERGE_SILENCE_MS
+        );
+        assert_eq!(
+            merge_wait_ms("incoming", "Да, пойдет?"),
+            INCOMING_SHORT_MERGE_SILENCE_MS
+        );
+        assert_eq!(
+            merge_wait_ms("incoming", "Мне нужно уточнить, а чтобы"),
+            INCOMING_INCOMPLETE_MERGE_SILENCE_MS
+        );
+    }
+
+    #[test]
+    fn incoming_endpointing_has_floor_without_slowing_outgoing() {
+        assert_eq!(endpointing_ms_for_direction("outgoing", 500), 500);
+        assert_eq!(
+            endpointing_ms_for_direction("incoming", 500),
+            INCOMING_ENDPOINTING_FLOOR_MS
+        );
+        assert_eq!(endpointing_ms_for_direction("incoming", 1_200), 1_200);
+    }
+
+    #[test]
+    fn drops_weak_incoming_fragments_without_dropping_questions_or_terms() {
+        assert!(should_drop_standalone_fragment("Вечно", "incoming"));
+        assert!(should_drop_standalone_fragment("Что ты,", "incoming"));
+        assert!(should_drop_standalone_fragment("я, я.", "incoming"));
+        assert!(should_drop_standalone_fragment(
+            "И интонирования с учетом всякой.",
+            "incoming"
+        ));
+        assert!(!should_drop_standalone_fragment(
+            "Что у тебя нового?",
+            "incoming"
+        ));
+        assert!(!should_drop_standalone_fragment("MySQL", "incoming"));
+    }
+
+    #[test]
+    fn merge_texts_removes_suffix_prefix_overlap() {
+        assert_eq!(
+            merge_texts("что такое sql", "sql injection"),
+            "что такое sql injection"
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_keeps_quiet_audio_when_incoming_is_inactive() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.002; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_is_disabled_outside_dual_channel_mode() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                false,
+                &[0.002; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_drops_quiet_bleed_while_incoming_is_active() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        note_incoming_audio_activity("incoming", true, &[0.08; 160], &active_until);
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.002; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            Some(AudioDropReason::QuietOutgoing)
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_keeps_close_mic_speech_while_incoming_is_active() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        note_incoming_audio_activity("incoming", true, &[0.08; 160], &active_until);
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.08; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn gated_drop_requires_keepalive() {
+        assert!(drop_requires_keepalive(AudioDropReason::IncomingActive));
+        assert!(drop_requires_keepalive(AudioDropReason::QuietOutgoing));
+    }
+
+    #[test]
+    fn outgoing_gate_keeps_close_mic_speech_in_dual_channel_mode() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.08; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_keeps_tail_after_close_mic_speech() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.08; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.002; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_ignores_incoming_direction() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "incoming",
+                true,
+                &[0.002; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn incoming_activity_marks_shared_state() {
+        let active_until = AtomicU64::new(0);
+
+        note_incoming_audio_activity("incoming", true, &[0.08; 160], &active_until);
+
+        assert!(active_until.load(Ordering::SeqCst) >= monotonic_wall_clock_ms());
+    }
+
+    #[test]
+    fn incoming_activity_does_not_mark_shared_state_outside_dual_mode() {
+        let active_until = AtomicU64::new(0);
+
+        note_incoming_audio_activity("incoming", false, &[0.08; 160], &active_until);
+
+        assert_eq!(active_until.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn incoming_activity_does_not_mark_shared_state_for_outgoing() {
+        let active_until = AtomicU64::new(0);
+
+        note_incoming_audio_activity("outgoing", true, &[0.08; 160], &active_until);
+
+        assert_eq!(active_until.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn outgoing_gate_keeps_quiet_audio_after_tail_when_incoming_is_inactive() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio =
+            Some(Instant::now() - Duration::from_millis(OUTGOING_MIC_HANGOVER_MS + 1));
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.002; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn incoming_activity_does_not_block_close_mic_after_hangover() {
+        let active_until =
+            AtomicU64::new(monotonic_wall_clock_ms() + INCOMING_ACTIVITY_HANGOVER_MS);
+        let mut last_strong_audio =
+            Some(Instant::now() - Duration::from_millis(OUTGOING_MIC_HANGOVER_MS + 1));
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.08; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn incoming_activity_blocks_quiet_mic_after_hangover() {
+        let active_until =
+            AtomicU64::new(monotonic_wall_clock_ms() + INCOMING_ACTIVITY_HANGOVER_MS);
+        let mut last_strong_audio =
+            Some(Instant::now() - Duration::from_millis(OUTGOING_MIC_HANGOVER_MS + 1));
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.002; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            Some(AudioDropReason::QuietOutgoing)
+        );
+    }
+
+    #[test]
+    fn audio_gate_accepts_peak_without_high_rms() {
+        let mut samples = vec![0.0; 160];
+        samples[0] = OUTGOING_MIC_PEAK;
+        let level = audio_level(&samples);
+
+        assert!(above_audio_gate(level, OUTGOING_MIC_RMS, OUTGOING_MIC_PEAK));
+    }
+
+    #[test]
+    fn audio_gate_rejects_low_rms_and_low_peak() {
+        let level = audio_level(&[0.002; 160]);
+
+        assert!(!above_audio_gate(
+            level,
+            OUTGOING_MIC_RMS,
+            OUTGOING_MIC_PEAK
+        ));
+    }
+
+    #[test]
+    fn outgoing_gate_drops_quiet_bleed_with_incoming_activity() {
+        let active_until =
+            AtomicU64::new(monotonic_wall_clock_ms() + INCOMING_ACTIVITY_HANGOVER_MS);
+        let mut last_strong_audio = None;
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.002; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            Some(AudioDropReason::QuietOutgoing)
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_keeps_close_mic_speech_with_incoming_activity() {
+        let active_until =
+            AtomicU64::new(monotonic_wall_clock_ms() + INCOMING_ACTIVITY_HANGOVER_MS);
+        let mut last_strong_audio = None;
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.08; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_keeps_quiet_initial_audio_without_incoming_activity() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.002; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_keeps_strong_initial_audio() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        assert_eq!(
+            should_drop_outgoing_audio(
+                "outgoing",
+                true,
+                &[0.08; 160],
+                &active_until,
+                &mut last_strong_audio,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn outgoing_gate_marks_strong_audio_for_tail_hangover() {
+        let active_until = AtomicU64::new(0);
+        let mut last_strong_audio = None;
+
+        let _ = should_drop_outgoing_audio(
+            "outgoing",
+            true,
+            &[0.08; 160],
+            &active_until,
+            &mut last_strong_audio,
+        );
+
+        assert!(last_strong_audio.is_some());
+    }
 }
 
 fn record_recent_tts(direction: &str, text: &str, recent_tts: &Arc<Mutex<Vec<RecentTts>>>) {
