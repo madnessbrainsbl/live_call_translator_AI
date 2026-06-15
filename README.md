@@ -7,7 +7,7 @@
 
 Windows-first live call translator with an AI assistant. The app listens to both sides of a voice or video call, transcribes speech with Deepgram, translates it with Groq, speaks the translation back through a virtual audio cable, and can generate live AI reply suggestions from the current transcript.
 
-The current project logic is centered on Windows, VB-CABLE A+B, a Rust audio engine, an Elixir supervisor, and a Flask control UI.
+The current project logic is centered on Windows, VB-CABLE A+B, a Rust audio engine, an Elixir supervisor, and a Flask control UI. It can also be packaged into a Windows portable folder with a desktop-style `LiveCallTranslator.exe` launcher.
 
 ## What It Does
 
@@ -20,6 +20,8 @@ The current project logic is centered on Windows, VB-CABLE A+B, a Rust audio eng
 - TTS with local Piper voices or Microsoft Edge Neural voices.
 - Windows audio routing through VB-CABLE A+B, plus browser/system audio capture helpers.
 - Call history, transcript export, bookmarks, and AI-generated summaries.
+- Optional Windows portable package with bundled Python/Flask, Elixir/Erlang runtime, Rust engine, ONNX Runtime, espeak-ng, and base EN/RU Piper voices.
+- Regression tests for assistant provider fallback, answer formatting, browser monitor routing, transcript/history behavior, and static startup safeguards.
 
 ## Architecture
 
@@ -90,6 +92,15 @@ Optional for the AI Assistant:
 
 ## Quick Start
 
+There are two supported ways to run the app:
+
+- **From source**: best for development and contributors.
+- **Portable build**: best for sharing with non-developer Windows users.
+
+The repository does not include generated binaries, `.env`, downloaded models, ONNX Runtime, `.venv`, `dist/`, or `portable/`. Those are created locally by setup/package scripts.
+
+## Run From Source
+
 ```powershell
 git clone https://github.com/madnessbrainsbl/live_call_translator_AI.git
 cd live_call_translator_AI
@@ -123,6 +134,40 @@ http://127.0.0.1:5050
 
 See [Usage Guide](USAGE.md) for controls, voice management, audio setup, AI Assistant, and call history.
 
+## Portable EXE Build
+
+After source setup succeeds, you can build a portable package:
+
+```powershell
+.\scripts\package_windows.ps1 -InstallBuildDeps
+```
+
+Outputs:
+
+- `dist\LiveCallTranslator-portable\`
+- `dist\LiveCallTranslator-portable.zip`
+- `dist\LiveCallTranslator-Setup.exe`, if Inno Setup `iscc.exe` is installed and available in PATH
+
+The portable folder contains a desktop-style launcher:
+
+```powershell
+.\dist\LiveCallTranslator-portable\LiveCallTranslator.exe
+```
+
+`LiveCallTranslator.exe` starts the bundled Flask UI, Elixir release, Rust audio engine, ONNX Runtime, espeak-ng, and base Piper voices. It opens the UI in an app-style Chrome/Edge window when a supported browser is installed. Internally the UI still runs locally at:
+
+```text
+http://127.0.0.1:5050
+```
+
+For script-based startup, the portable folder also includes:
+
+```powershell
+.\dist\LiveCallTranslator-portable\Start-Translator.cmd
+```
+
+VB-CABLE A+B, API keys, Codex CLI, and internet access for cloud providers are not bundled. See [Windows Packaging](PACKAGING_WINDOWS.md) for details.
+
 ## What Setup Downloads And Builds
 
 `setup_windows.ps1` does the project-specific work after the system packages are installed:
@@ -135,6 +180,21 @@ See [Usage Guide](USAGE.md) for controls, voice management, audio setup, AI Assi
 - writes Windows paths for ONNX Runtime and espeak-ng data;
 - runs `mix deps.get`;
 - compiles the Elixir app and Rust audio engine.
+
+## What Packaging Builds
+
+`scripts/package_windows.ps1` creates a redistributable Windows folder:
+
+- builds `native/audio_engine/target/release/audio_engine.exe`;
+- builds `native/windows_launcher` into `LiveCallTranslator.exe`;
+- builds an Elixir release with the Erlang runtime included;
+- builds the Flask UI as a PyInstaller `web-ui\web-ui.exe` bundle;
+- copies minimal ONNX Runtime DLLs without debug `.pdb`/`.lib` files;
+- copies espeak-ng and its data files;
+- copies only the default English and Russian Piper voices;
+- writes `Start-Translator.ps1` and `Start-Translator.cmd`;
+- creates `LiveCallTranslator-portable.zip`;
+- optionally creates `LiveCallTranslator-Setup.exe` through Inno Setup.
 
 ## Windows Audio Setup
 
@@ -188,17 +248,42 @@ Edge mode uses Microsoft Edge Neural voices through `edge-tts`. It does not requ
 
 - Live transcript with original speech and translated text.
 - AI Assistant panel with quick and detailed answer generation.
+- More predictable assistant answer formatting for numbered interview-style answers.
 - Provider testing for Deepgram, Groq, Codex, and OpenRouter.
+- Provider fallback behavior for Codex, OpenRouter, and Groq.
 - Voice selection, voice download, and preview playback.
 - Piper local voices and Microsoft Edge Neural voice mode.
 - Browser Monitor for browser audio capture and playback.
 - Text Only mode when you need translation without spoken TTS.
 - Independent outgoing/incoming mute controls.
 - Bookmarks and saved-message filtering.
-- Local call history with AI summaries.
+- Local call history with utterance recording, export, cleanup, resume, and AI summaries.
 - Transcript export.
 - Dark/light theme.
 - Per-message latency metrics for STT, translation, TTS, and total time.
+
+## Developer Checks
+
+The current test suite covers Python route/helper behavior and static UI invariants:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Rust checks:
+
+```powershell
+cargo check --manifest-path native\audio_engine\Cargo.toml
+cargo check --manifest-path native\windows_launcher\Cargo.toml
+```
+
+Elixir/Rust integrated compile:
+
+```powershell
+mix compile
+```
+
+The repository includes maintenance helpers such as `scripts/backfill_call_history.py` for backfilling call utterances from existing translator logs.
 
 ## Supported Languages
 
