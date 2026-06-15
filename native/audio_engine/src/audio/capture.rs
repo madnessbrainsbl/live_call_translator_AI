@@ -37,7 +37,11 @@ impl AudioCapture {
     /// Uses the device's default configuration (sample rate + channels) to guarantee
     /// compatibility across different devices (built-in mic, headphones, etc.).
     /// Audio is downmixed to mono before sending.
-    pub fn new(device_name: &str, sender: Sender<AudioChunk>) -> Result<Self> {
+    pub fn new(
+        device_name: &str,
+        sender: Sender<AudioChunk>,
+        error_sender: Sender<String>,
+    ) -> Result<Self> {
         let device = find_input_device(device_name)?;
         let actual_name = device.name().unwrap_or_else(|_| "unknown".into());
 
@@ -60,9 +64,15 @@ impl AudioCapture {
         );
 
         let stream = match default_cfg.sample_format() {
-            SampleFormat::F32 => build_input_stream_f32(&device, &config, channels, sender)?,
-            SampleFormat::I16 => build_input_stream_i16(&device, &config, channels, sender)?,
-            SampleFormat::U16 => build_input_stream_u16(&device, &config, channels, sender)?,
+            SampleFormat::F32 => {
+                build_input_stream_f32(&device, &config, channels, sender, error_sender)?
+            }
+            SampleFormat::I16 => {
+                build_input_stream_i16(&device, &config, channels, sender, error_sender)?
+            }
+            SampleFormat::U16 => {
+                build_input_stream_u16(&device, &config, channels, sender, error_sender)?
+            }
             other => anyhow::bail!("Unsupported input sample format: {:?}", other),
         };
 
@@ -77,7 +87,11 @@ impl AudioCapture {
     ///
     /// On Windows, cpal transparently enables WASAPI loopback when an input
     /// stream is built on a render endpoint. Other platforms will fail cleanly.
-    pub fn new_loopback(output_device_name: &str, sender: Sender<AudioChunk>) -> Result<Self> {
+    pub fn new_loopback(
+        output_device_name: &str,
+        sender: Sender<AudioChunk>,
+        error_sender: Sender<String>,
+    ) -> Result<Self> {
         let device = find_output_device(output_device_name)?;
         let actual_name = device.name().unwrap_or_else(|_| "unknown".into());
 
@@ -100,9 +114,15 @@ impl AudioCapture {
         );
 
         let stream = match default_cfg.sample_format() {
-            SampleFormat::F32 => build_input_stream_f32(&device, &config, channels, sender)?,
-            SampleFormat::I16 => build_input_stream_i16(&device, &config, channels, sender)?,
-            SampleFormat::U16 => build_input_stream_u16(&device, &config, channels, sender)?,
+            SampleFormat::F32 => {
+                build_input_stream_f32(&device, &config, channels, sender, error_sender)?
+            }
+            SampleFormat::I16 => {
+                build_input_stream_i16(&device, &config, channels, sender, error_sender)?
+            }
+            SampleFormat::U16 => {
+                build_input_stream_u16(&device, &config, channels, sender, error_sender)?
+            }
             other => anyhow::bail!("Unsupported loopback sample format: {:?}", other),
         };
 
@@ -140,6 +160,7 @@ fn build_input_stream_f32(
     config: &StreamConfig,
     channels: u16,
     sender: Sender<AudioChunk>,
+    error_sender: Sender<String>,
 ) -> Result<Stream> {
     device
         .build_input_stream(
@@ -157,7 +178,7 @@ fn build_input_stream_f32(
                     debug!("Capture channel full or disconnected: {}", e);
                 }
             },
-            move |err| error!("Capture stream error: {}", err),
+            move |err| report_capture_error(err, &error_sender),
             None,
         )
         .context("Failed to build input stream")
@@ -168,6 +189,7 @@ fn build_input_stream_i16(
     config: &StreamConfig,
     channels: u16,
     sender: Sender<AudioChunk>,
+    error_sender: Sender<String>,
 ) -> Result<Stream> {
     device
         .build_input_stream(
@@ -187,7 +209,7 @@ fn build_input_stream_i16(
                     debug!("Capture channel full or disconnected: {}", e);
                 }
             },
-            move |err| error!("Capture stream error: {}", err),
+            move |err| report_capture_error(err, &error_sender),
             None,
         )
         .context("Failed to build input stream")
@@ -198,6 +220,7 @@ fn build_input_stream_u16(
     config: &StreamConfig,
     channels: u16,
     sender: Sender<AudioChunk>,
+    error_sender: Sender<String>,
 ) -> Result<Stream> {
     device
         .build_input_stream(
@@ -223,10 +246,16 @@ fn build_input_stream_u16(
                     debug!("Capture channel full or disconnected: {}", e);
                 }
             },
-            move |err| error!("Capture stream error: {}", err),
+            move |err| report_capture_error(err, &error_sender),
             None,
         )
         .context("Failed to build input stream")
+}
+
+fn report_capture_error(err: cpal::StreamError, error_sender: &Sender<String>) {
+    let message = format!("Capture stream error: {}", err);
+    error!("{}", message);
+    let _ = error_sender.try_send(message);
 }
 
 /// Find an input device by name. `"default"` returns the default input device.

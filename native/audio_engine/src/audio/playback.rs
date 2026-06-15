@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, FromSample, Sample, SampleFormat, Stream, StreamConfig};
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use log::{debug, error, info};
 use ringbuf::{
     traits::{Consumer, Producer, Split},
@@ -24,7 +24,12 @@ impl AudioPlayback {
     /// `device_name`: `"default"` for default output, or a specific name like `"BlackHole 2ch"`.
     /// `sample_rate`: desired sample rate (e.g. 48000).
     /// `receiver`: channel providing audio sample buffers to play.
-    pub fn new(device_name: &str, sample_rate: u32, receiver: Receiver<Vec<f32>>) -> Result<Self> {
+    pub fn new(
+        device_name: &str,
+        sample_rate: u32,
+        receiver: Receiver<Vec<f32>>,
+        error_sender: Sender<String>,
+    ) -> Result<Self> {
         let device = find_output_device(device_name)?;
         let actual_name = device.name().unwrap_or_else(|_| "unknown".into());
 
@@ -86,9 +91,15 @@ impl AudioPlayback {
             .context("Failed to spawn playback feeder thread")?;
 
         let stream = match default_cfg.sample_format() {
-            SampleFormat::F32 => build_output_stream::<f32>(&device, &config, channels, consumer)?,
-            SampleFormat::I16 => build_output_stream::<i16>(&device, &config, channels, consumer)?,
-            SampleFormat::U16 => build_output_stream::<u16>(&device, &config, channels, consumer)?,
+            SampleFormat::F32 => {
+                build_output_stream::<f32>(&device, &config, channels, consumer, error_sender)?
+            }
+            SampleFormat::I16 => {
+                build_output_stream::<i16>(&device, &config, channels, consumer, error_sender)?
+            }
+            SampleFormat::U16 => {
+                build_output_stream::<u16>(&device, &config, channels, consumer, error_sender)?
+            }
             other => anyhow::bail!("Unsupported output sample format: {:?}", other),
         };
 
@@ -122,6 +133,7 @@ fn build_output_stream<T>(
     config: &StreamConfig,
     channels: u16,
     mut consumer: impl Consumer<Item = f32> + Send + 'static,
+    error_sender: Sender<String>,
 ) -> Result<Stream>
 where
     T: Sample + FromSample<f32> + cpal::SizedSample,
@@ -150,12 +162,16 @@ where
                     );
                 }
             },
-            move |err| {
-                error!("Playback stream error: {}", err);
-            },
+            move |err| report_playback_error(err, &error_sender),
             None,
         )
         .context("Failed to build output stream")
+}
+
+fn report_playback_error(err: cpal::StreamError, error_sender: &Sender<String>) {
+    let message = format!("Playback stream error: {}", err);
+    error!("{}", message);
+    let _ = error_sender.try_send(message);
 }
 
 /// Find an output device by name. `"default"` returns the default output device.

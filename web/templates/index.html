@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Live Translator</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20260510-1') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20260610-1') }}">
 </head>
 <body>
 
@@ -71,14 +71,23 @@
           <div class="sp-hint">Used for translation via LLM. Get a key at console.groq.com</div>
         </div>
         <div class="sp-field">
+          <div class="sp-label">Backup Groq API Key <span class="badge">AI fallback</span></div>
+          <div class="sp-input-row">
+            <input class="sp-input sp-key" id="cfg-groq-backup" type="text" placeholder="Enter backup Groq key..." autocomplete="one-time-code" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other">
+            <button class="sp-test-btn" id="test-groq-backup" onclick="testKey('groq_backup')">Test</button>
+          </div>
+          <div class="sp-hint">Used only when the primary Groq key is rate-limited or unavailable.</div>
+        </div>
+        <div class="sp-field">
           <div class="sp-label">AI Assistant Provider <span class="badge">primary</span></div>
           <select class="sp-input" id="cfg-ai-provider">
             <option value="codex">ChatGPT / Codex</option>
             <option value="openrouter">OpenRouter</option>
+            <option value="gemini">Gemini</option>
             <option value="groq">Groq</option>
             <option value="auto">Auto fallback</option>
           </select>
-          <div class="sp-hint">Choose exactly who answers in the AI Assistant. Auto fallback tries Codex, OpenRouter, then Groq.</div>
+          <div class="sp-hint">Live answers use Groq first, OpenRouter and Gemini as API fallbacks, and ChatGPT / Codex as the stable local fallback.</div>
         </div>
         <div class="sp-field">
           <div class="sp-label">ChatGPT / Codex Login <span class="badge">AI Assistant</span></div>
@@ -109,6 +118,24 @@
           <div class="sp-label">OpenRouter Model <span class="badge">AI Assistant</span></div>
           <input class="sp-input" id="cfg-openrouter-model" type="text" spellcheck="false" value="openrouter/auto">
           <div class="sp-hint">Use openrouter/auto or any exact OpenRouter model id.</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">Gemini API Key <span class="badge">AI fallback</span></div>
+          <div class="sp-input-row">
+            <input class="sp-input sp-key" id="cfg-gemini" type="text" placeholder="Enter Gemini key..." autocomplete="one-time-code" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other">
+            <button class="sp-test-btn" id="test-gemini" onclick="testKey('gemini')">Test</button>
+          </div>
+          <div class="sp-hint">Used when Groq, OpenRouter, or Codex cannot answer.</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">Gemini Model <span class="badge">AI fallback</span></div>
+          <input class="sp-input" id="cfg-gemini-model" type="text" spellcheck="false" value="gemini-3.5-flash">
+          <div class="sp-hint">Default is gemini-3.5-flash.</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">Antigravity URL <span class="badge">local Gemini</span></div>
+          <input class="sp-input" id="cfg-antigravity-url" type="text" spellcheck="false" value="http://127.0.0.1:8045/v1/chat/completions">
+          <div class="sp-hint">Used when the Gemini key starts with sk-. Press Start Service in Antigravity Tools first.</div>
         </div>
       </div>
     </div>
@@ -184,6 +211,15 @@
             <option value="zh">Chinese</option>
           </select>
           <div class="sp-hint">Select a language, then download additional voices from the Voice section below.</div>
+        </div>
+        <div class="sp-field">
+          <div class="sp-label">AI Answer Language <span class="badge">assistant</span></div>
+          <select class="sp-input" id="cfg-ai-answer-language">
+            <option value="their">Their language</option>
+            <option value="my">My language</option>
+            <option value="auto">Auto</option>
+          </select>
+          <div class="sp-hint">Use Their language for interview answers you can say directly.</div>
         </div>
       </div>
     </div>
@@ -324,6 +360,10 @@
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.8l.9 2.7 2.8.2-2.2 1.7.7 2.8L8 7.7 5.8 9.2l.7-2.8-2.2-1.7 2.8-.2L8 1.8z"/><path d="M3.5 11.5h9M5 14h6"/></svg>
     AI Assistant
   </button>
+  <button class="btn btn-icon btn-hide-transcript" id="btn-hide-transcript" onclick="toggleTranscriptHidden()" title="Hide transcript bubbles; keep AI Assistant context" aria-pressed="false">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 8s2.2-4 6.2-4 6.2 4 6.2 4-2.2 4-6.2 4-6.2-4-6.2-4z"/><circle cx="8" cy="8" r="1.8"/><path d="M2.5 13.5l11-11"/></svg>
+    AI Only
+  </button>
   <button class="btn btn-icon btn-prompt" id="btn-res" onclick="openPromptEditor('res')" title="Resume prompt">res</button>
   <button class="btn btn-icon btn-prompt" id="btn-vac" onclick="openPromptEditor('vac')" title="Vacancy prompt">vac</button>
   <div class="btn-sep"></div>
@@ -368,6 +408,6 @@
 </footer>
 
 <script src="{{ url_for('static', filename='js/tooltips.js', v='20260502-1') }}"></script>
-<script src="{{ url_for('static', filename='js/app.js', v='20260510-2') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js', v='20260611-7') }}"></script>
 </body>
 </html>

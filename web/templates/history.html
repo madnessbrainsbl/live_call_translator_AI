@@ -63,6 +63,8 @@
   .back-bar { margin-bottom: 16px; display: flex; gap: 10px; align-items: center; }
   .continue-btn { border-color: var(--green); color: var(--green); }
   .continue-btn:hover { background: var(--green); color: var(--bg); }
+  .export-btn { border-color: var(--blue); color: var(--blue); }
+  .export-btn:hover { background: var(--blue); color: var(--bg); }
   .utterance {
     padding: 10px 14px; margin-bottom: 6px; border-radius: 10px;
     max-width: 85%;
@@ -109,7 +111,8 @@
   <div id="detail-view" class="detail-panel">
     <div class="back-bar">
       <button class="btn" onclick="showList()">&#8592; Back</button>
-      <button class="btn continue-btn" id="btn-continue" onclick="continueCall()">&#9654; Continue</button>
+      <button class="btn export-btn" id="btn-export-call" onclick="exportCurrentCall()">&#8681; Export</button>
+      <button class="btn continue-btn" id="btn-continue" onclick="continueCall()">&#9654; Resume Live</button>
       <button class="btn" id="btn-summary" onclick="genSummary()">&#9733; Summary</button>
       <button class="btn danger" id="btn-delete" onclick="deleteCall()">&#10005; Delete</button>
     </div>
@@ -119,7 +122,13 @@
 </div>
 
 <script>
+const EXPORT_FILENAME_PREFIX = 'call-transcript';
+const EXPORT_MIME_TYPE = 'text/plain;charset=utf-8';
+const CALL_SUMMARY_PREVIEW_CHARS = 150;
+
 let currentCallId = null;
+let currentCall = null;
+let currentUtterances = [];
 
 function getTheme() { return localStorage.getItem('translator-theme') || 'dark'; }
 function applyTheme(t) { document.documentElement.setAttribute('data-theme', t); }
@@ -141,50 +150,146 @@ async function loadCalls() {
     const card = document.createElement('div');
     card.className = 'call-card';
     card.onclick = () => showDetail(c.id);
+    const startedAt = String(c.started_at || '');
+    const endedAt = String(c.ended_at || '');
     const langs = (c.my_language || '??').toUpperCase() + ' \u2194 ' + (c.their_language || '??').toUpperCase();
-    const ended = c.ended_at ? ' \u2014 ' + c.ended_at.slice(11, 16) : ' (active)';
+    const ended = endedAt ? ' \u2014 ' + endedAt.slice(11, 16) : ' (active)';
+    const summary = String(c.summary || '');
+    const summaryPreview = summary.slice(0, CALL_SUMMARY_PREVIEW_CHARS) +
+      (summary.length > CALL_SUMMARY_PREVIEW_CHARS ? '...' : '');
     card.innerHTML =
       '<div class="call-header">' +
-        '<span class="call-date">' + c.started_at.slice(0, 16).replace('T', ' ') + ended + '</span>' +
-        '<span class="call-langs">' + langs + '</span>' +
+        '<span class="call-date">' + escHtml(startedAt.slice(0, 16).replace('T', ' ') + ended) + '</span>' +
+        '<span class="call-langs">' + escHtml(langs) + '</span>' +
       '</div>' +
-      '<div class="call-meta">' + c.utterance_count + ' messages</div>' +
-      (c.summary ? '<div class="call-summary">' + c.summary.slice(0, 150) + (c.summary.length > 150 ? '...' : '') + '</div>' : '');
+      '<div class="call-meta">' + escHtml(String(c.utterance_count || 0)) + ' messages</div>' +
+      (summary ? '<div class="call-summary">' + escHtml(summaryPreview) + '</div>' : '');
     list.appendChild(card);
   });
 }
 
 async function showDetail(id) {
   currentCallId = id;
+  currentCall = null;
+  currentUtterances = [];
   document.getElementById('list-view').classList.remove('active');
   document.getElementById('detail-view').classList.add('active');
+  document.getElementById('btn-export-call').disabled = true;
+  document.getElementById('utterances').innerHTML = '<div class="empty"><span class="spinner"></span> Loading...</div>';
+  document.getElementById('summary-container').innerHTML = '';
 
-  const resp = await fetch('/api/calls/' + id);
-  const data = await resp.json();
-  const call = data.call;
-  const utts = data.utterances;
+  try {
+    const resp = await fetch('/api/calls/' + id);
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || 'Failed to load call');
 
+    currentCall = data.call;
+    currentUtterances = Array.isArray(data.utterances) ? data.utterances : [];
+    renderCallDetail(currentCall, currentUtterances);
+    document.getElementById('btn-export-call').disabled = false;
+  } catch (e) {
+    document.getElementById('utterances').innerHTML =
+      '<div class="empty">' + escHtml(e.message || 'Failed to load call') + '</div>';
+  }
+}
+
+function renderCallDetail(call, utterances) {
   const sc = document.getElementById('summary-container');
   sc.innerHTML = call.summary ? '<div class="summary-box">' + escHtml(call.summary) + '</div>' : '';
-
   const container = document.getElementById('utterances');
   container.innerHTML = '';
-  utts.forEach(u => {
-    const div = document.createElement('div');
-    div.className = 'utterance ' + u.speaker;
-    div.innerHTML =
-      '<div class="utt-original">' + escHtml(u.original) + '</div>' +
-      '<div class="utt-translated">' + escHtml(u.translated) + '</div>' +
-      '<div class="utt-time">' + u.ts.slice(11, 19) + '</div>';
-    container.appendChild(div);
-  });
+  if (!utterances.length) {
+    container.innerHTML = '<div class="empty">No messages recorded for this call</div>';
+    return;
+  }
+  utterances.forEach(u => container.appendChild(renderUtterance(u)));
+}
+
+function renderUtterance(u) {
+  const div = document.createElement('div');
+  const original = String(u.original || '').trim();
+  const translated = String(u.translated || '').trim();
+  const time = u.ts ? String(u.ts).slice(11, 19) : '';
+  const showOriginal = original && !textsAreSame(original, translated);
+  const visibleText = translated || original;
+
+  div.className = 'utterance ' + (u.speaker || '');
+  div.innerHTML =
+    (showOriginal ? '<div class="utt-original">' + escHtml(original) + '</div>' : '') +
+    '<div class="utt-translated">' + escHtml(visibleText) + '</div>' +
+    '<div class="utt-time">' + escHtml(time) + '</div>';
+  return div;
 }
 
 function showList() {
   document.getElementById('detail-view').classList.remove('active');
   document.getElementById('list-view').classList.add('active');
   currentCallId = null;
+  currentCall = null;
+  currentUtterances = [];
   loadCalls();
+}
+
+function exportCurrentCall() {
+  if (!currentCall || !currentUtterances.length) {
+    alert('Call is still loading or has no messages to export');
+    return;
+  }
+
+  try {
+    const text = buildCallExportText(currentCall, currentUtterances);
+    downloadTextFile(buildCallExportFilename(currentCall), text);
+  } catch (e) {
+    alert(e.message || 'Failed to export call');
+  }
+}
+
+function buildCallExportFilename(call) {
+  const started = String(call.started_at || new Date().toISOString())
+    .slice(0, 16)
+    .replace('T', '-')
+    .replace(':', '-');
+  return EXPORT_FILENAME_PREFIX + '-' + started + '.txt';
+}
+
+function buildCallExportText(call, utterances) {
+  const langs = (call.my_language || '??').toUpperCase() + ' <-> ' + (call.their_language || '??').toUpperCase();
+  const lines = [
+    'Call #' + call.id,
+    'Started: ' + (call.started_at || ''),
+    'Ended: ' + (call.ended_at || 'active'),
+    'Languages: ' + langs,
+    'Messages: ' + utterances.length,
+    ''
+  ];
+
+  utterances.forEach(u => {
+    appendUtteranceExportLines(lines, u);
+  });
+
+  return lines.join('\n').trimEnd() + '\n';
+}
+
+function appendUtteranceExportLines(lines, u) {
+  const speaker = u.speaker === 'me' ? 'Me' : 'Them';
+  const time = u.ts ? String(u.ts).slice(11, 19) : '??:??:??';
+  const original = String(u.original || '').trim();
+  const translated = String(u.translated || '').trim();
+  const prefix = '[' + time + '] ' + speaker;
+
+  if (original) lines.push(prefix + ': ' + original);
+  if (translated && !textsAreSame(original, translated)) lines.push(prefix + ' >> ' + translated);
+  lines.push('');
+}
+
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: EXPORT_MIME_TYPE });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 async function genSummary() {
@@ -219,7 +324,7 @@ async function continueCall() {
   } catch (e) {
     alert(e.message || 'Failed to resume call');
     btn.disabled = false;
-    btn.innerHTML = '&#9654; Continue';
+    btn.innerHTML = '&#9654; Resume Live';
   }
 }
 
@@ -240,6 +345,14 @@ async function clearAllHistory() {
 
 function escHtml(s) {
   const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+}
+
+function textsAreSame(a, b) {
+  return normalizeExportText(a) === normalizeExportText(b);
+}
+
+function normalizeExportText(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
 loadCalls();

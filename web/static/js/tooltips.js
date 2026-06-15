@@ -16,6 +16,7 @@ const TIPS = {
     'test-key': 'Verify that the API key is valid',
     'my-lang': 'The language you speak',
     'their-lang': 'The language the other person speaks',
+    'ai-answer-language': 'Language used by AI Assistant replies',
     'voice-in': 'TTS voice for translations you hear',
     'voice-out': 'TTS voice for translations they hear',
     'dl-voice': 'Download this voice model',
@@ -43,6 +44,7 @@ const TIPS = {
     'test-key': 'Проверить валидность API-ключа',
     'my-lang': 'Язык, на котором говорите вы',
     'their-lang': 'Язык, на котором говорит собеседник',
+    'ai-answer-language': 'Язык ответов AI Assistant',
     'voice-in': 'Голос для перевода, который слышите вы',
     'voice-out': 'Голос для перевода, который слышит собеседник',
     'dl-voice': 'Скачать эту голосовую модель',
@@ -429,8 +431,12 @@ function applyTooltips() {
   // Settings
   t('test-deepgram', 'test-key');
   t('test-groq', 'test-key');
+  t('test-groq-backup', 'test-key');
+  t('test-openrouter', 'test-key');
+  t('test-gemini', 'test-key');
   t('cfg-my-lang', 'my-lang');
   t('cfg-their-lang', 'their-lang');
+  t('cfg-ai-answer-language', 'ai-answer-language');
   t('cfg-voice-in', 'voice-in');
   t('cfg-voice-out', 'voice-out');
   t('dl-voice-in', 'dl-voice');

@@ -9,13 +9,15 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from collections import defaultdict
 
 from .settings import (
-    GROQ_MODEL, GROQ_CHAT_URL, OPENROUTER_CHAT_URL, PIPER_VOICES_URL,
+    GROQ_MODEL, GROQ_CHAT_URL, OPENROUTER_CHAT_URL, GEMINI_GENERATE_URL, PIPER_VOICES_URL,
     USER_AGENT, CMD_HOST, CMD_PORT, MODELS_DIR, DEFAULT_VOICES, VOICE_CATALOG_CACHE_FILE,
-    DEFAULT_CODEX_MODEL, get_openrouter_model,
+    DEFAULT_CODEX_MODEL, DEFAULT_GEMINI_MODEL, get_openrouter_model, get_gemini_model,
+    get_antigravity_chat_url,
 )
 
 
@@ -122,6 +124,133 @@ def call_openrouter(messages, api_key, temperature=0.3, max_tokens=None, timeout
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         result = json.loads(resp.read().decode())
     return _extract_chat_response(result, "OpenRouter")
+
+
+def _validated_local_chat_url(url):
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise RuntimeError("Antigravity chat URL must use http or https")
+    hostname = (parsed.hostname or "").lower()
+    if hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError("Antigravity chat URL must point to localhost")
+    if not parsed.path:
+        raise RuntimeError("Antigravity chat URL must include an API path")
+    return urllib.parse.urlunparse(parsed)
+
+
+def call_antigravity(messages, api_key, temperature=0.3, max_tokens=None, timeout=15, model=None, chat_url=None):
+    model_name = (model or get_gemini_model() or DEFAULT_GEMINI_MODEL).strip()
+    if model_name.startswith("models/"):
+        model_name = model_name.split("/", 1)[1]
+    if not model_name:
+        model_name = DEFAULT_GEMINI_MODEL
+    body = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if max_tokens:
+        body["max_tokens"] = max_tokens
+    req = urllib.request.Request(
+        _validated_local_chat_url(chat_url or get_antigravity_chat_url()),
+        data=json.dumps(body).encode(),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read().decode())
+    return _extract_chat_response(result, "Antigravity")
+
+
+def _gemini_contents_from_messages(messages):
+    system_parts = []
+    contents = []
+    for message in messages:
+        role = str(message.get("role") or "user").strip().lower()
+        text = _content_to_text(message.get("content"))
+        if not text:
+            continue
+        if role == "system":
+            system_parts.append(text)
+            continue
+        gemini_role = "model" if role == "assistant" else "user"
+        contents.append({"role": gemini_role, "parts": [{"text": text}]})
+
+    system_text = "\n\n".join(system_parts).strip()
+    if not contents and system_text:
+        contents.append({"role": "user", "parts": [{"text": system_text}]})
+        system_text = ""
+    return system_text, contents
+
+
+def _extract_gemini_response(result):
+    candidates = result.get("candidates") if isinstance(result, dict) else None
+    if not candidates:
+        feedback = result.get("promptFeedback") if isinstance(result, dict) else None
+        if isinstance(feedback, dict):
+            reason = feedback.get("blockReason") or feedback.get("blockReasonMessage")
+            if reason:
+                raise RuntimeError(f"Gemini blocked response: {reason}")
+        error = result.get("error") if isinstance(result, dict) else None
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("status") or error
+            raise RuntimeError(f"Gemini error: {message}")
+        raise RuntimeError("Gemini returned no candidates")
+
+    candidate = candidates[0] or {}
+    content = candidate.get("content") or {}
+    parts = content.get("parts") or []
+    text = "\n".join(
+        part_text
+        for part_text in (_content_to_text(part.get("text")) for part in parts if isinstance(part, dict))
+        if part_text
+    ).strip()
+    if text:
+        return text
+
+    finish = candidate.get("finishReason")
+    if finish:
+        raise RuntimeError(f"Gemini returned empty content (finish_reason={finish})")
+    raise RuntimeError("Gemini returned empty content")
+
+
+def call_gemini(messages, api_key, temperature=0.3, max_tokens=None, timeout=15, model=None):
+    model_name = (model or get_gemini_model() or DEFAULT_GEMINI_MODEL).strip()
+    if model_name.startswith("models/"):
+        model_name = model_name.split("/", 1)[1]
+    if not model_name:
+        model_name = DEFAULT_GEMINI_MODEL
+    system_text, contents = _gemini_contents_from_messages(messages)
+    if not contents:
+        raise RuntimeError("Gemini request has no user content")
+
+    body = {
+        "contents": contents,
+        "generationConfig": {
+            "temperature": temperature,
+        },
+    }
+    if max_tokens:
+        body["generationConfig"]["maxOutputTokens"] = max_tokens
+    if system_text:
+        body["systemInstruction"] = {"parts": [{"text": system_text}]}
+
+    endpoint = GEMINI_GENERATE_URL.format(model=urllib.parse.quote(model_name, safe=""))
+    url = f"{endpoint}?{urllib.parse.urlencode({'key': api_key})}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read().decode())
+    return _extract_gemini_response(result)
 
 
 def _codex_command_prefix():

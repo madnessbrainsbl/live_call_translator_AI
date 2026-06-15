@@ -19,10 +19,15 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_CODEX_MODEL = "gpt-5.4"
 DEFAULT_OPENROUTER_MODEL = "openrouter/auto"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_ANTIGRAVITY_CHAT_URL = "http://127.0.0.1:8045/v1/chat/completions"
 DEFAULT_MY_LANGUAGE = "ru"
 DEFAULT_THEIR_LANGUAGE = "en"
+DEFAULT_AI_ANSWER_LANGUAGE = "their"
+AI_ANSWER_LANGUAGE_MODES = {"their", "my", "auto"}
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+GEMINI_GENERATE_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 DEEPGRAM_API_URL = "https://api.deepgram.com/v1/projects"
 PIPER_VOICES_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
 USER_AGENT = "translator/1.0"
@@ -87,15 +92,20 @@ DEFAULT_VOICES = {
 DEFAULT_SETTINGS = {
     "deepgram_api_key": "",
     "groq_api_key": "",
+    "backup_groq_api_key": "",
     "ai_provider": "codex",
     "codex_enabled": True,
     "codex_model": DEFAULT_CODEX_MODEL,
     "openrouter_api_key": "",
     "openrouter_model": OPENROUTER_MODEL,
+    "gemini_api_key": "",
+    "gemini_model": DEFAULT_GEMINI_MODEL,
+    "antigravity_chat_url": DEFAULT_ANTIGRAVITY_CHAT_URL,
     "ai_resume_prompt": "",
     "ai_vacancy_prompt": "",
     "text_only_mode": False,
     "transcript_only_mode": False,
+    "transcript_hidden_mode": False,
     "translation_enabled": True,
     "tts_provider": "piper",
     "tts_outgoing_voice": "",
@@ -107,6 +117,7 @@ DEFAULT_SETTINGS = {
     "endpointing_ms": 700,
     "my_language": DEFAULT_MY_LANGUAGE,
     "their_language": DEFAULT_THEIR_LANGUAGE,
+    "ai_answer_language": DEFAULT_AI_ANSWER_LANGUAGE,
 }
 
 
@@ -145,6 +156,11 @@ def _normalize_language_code(value: object, fallback: str) -> str:
     return code or fallback
 
 
+def _normalize_ai_answer_language(value: object) -> str:
+    mode = str(value or "").strip().lower()
+    return mode if mode in AI_ANSWER_LANGUAGE_MODES else DEFAULT_AI_ANSWER_LANGUAGE
+
+
 def _repair_translation_language_pair(settings: dict) -> dict:
     migrated = dict(settings)
     my_language = _normalize_language_code(migrated.get("my_language"), DEFAULT_MY_LANGUAGE)
@@ -162,6 +178,9 @@ def _repair_translation_language_pair(settings: dict) -> dict:
 
     migrated["my_language"] = my_language
     migrated["their_language"] = their_language
+    migrated["ai_answer_language"] = _normalize_ai_answer_language(
+        migrated.get("ai_answer_language")
+    )
     return migrated
 
 
@@ -237,8 +256,18 @@ def load_settings():
     settings = dict(DEFAULT_SETTINGS)
     settings["deepgram_api_key"] = os.environ.get("DEEPGRAM_API_KEY", "")
     settings["groq_api_key"] = os.environ.get("GROQ_API_KEY", "")
+    settings["backup_groq_api_key"] = (
+        os.environ.get("GROQ_BACKUP_API_KEY", "")
+        or os.environ.get("GROQ_API_KEY_BACKUP", "")
+    )
     settings["openrouter_api_key"] = os.environ.get("OPENROUTER_API_KEY", "")
     settings["openrouter_model"] = os.environ.get("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
+    settings["gemini_api_key"] = os.environ.get("GEMINI_API_KEY", "")
+    settings["gemini_model"] = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+    settings["antigravity_chat_url"] = os.environ.get(
+        "ANTIGRAVITY_CHAT_URL",
+        DEFAULT_ANTIGRAVITY_CHAT_URL,
+    )
     return _migrate_platform_audio_settings(settings)
 
 
@@ -246,11 +275,21 @@ def save_settings_to_file(settings):
     cleaned = _migrate_platform_audio_settings(settings)
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(cleaned, f, indent=2)
+    return cleaned
 
 
 def get_groq_key():
     settings = load_settings()
     return settings.get("groq_api_key") or os.environ.get("GROQ_API_KEY", "")
+
+
+def get_backup_groq_key():
+    settings = load_settings()
+    return (
+        settings.get("backup_groq_api_key")
+        or os.environ.get("GROQ_BACKUP_API_KEY", "")
+        or os.environ.get("GROQ_API_KEY_BACKUP", "")
+    )
 
 
 def get_openrouter_key():
@@ -264,4 +303,27 @@ def get_openrouter_model():
         settings.get("openrouter_model")
         or os.environ.get("OPENROUTER_MODEL")
         or DEFAULT_OPENROUTER_MODEL
+    )
+
+
+def get_gemini_key():
+    settings = load_settings()
+    return settings.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", "")
+
+
+def get_gemini_model():
+    settings = load_settings()
+    return (
+        settings.get("gemini_model")
+        or os.environ.get("GEMINI_MODEL")
+        or DEFAULT_GEMINI_MODEL
+    )
+
+
+def get_antigravity_chat_url():
+    settings = load_settings()
+    return (
+        settings.get("antigravity_chat_url")
+        or os.environ.get("ANTIGRAVITY_CHAT_URL")
+        or DEFAULT_ANTIGRAVITY_CHAT_URL
     )

@@ -5,6 +5,7 @@ import time
 import sqlite3
 import threading
 import logging
+from datetime import datetime
 
 from .settings import DB_FILE, CALL_IDLE_TIMEOUT, load_settings
 
@@ -61,8 +62,9 @@ _current_call_id = None
 _call_last_activity = 0
 _call_pending = {}  # direction -> {"transcript": ..., "ts": ...}
 
-_LINE_TRANSCRIPT = re.compile(r".*\U0001F3A4 \[(outgoing|incoming)\] (.+)")
-_LINE_TRANSLATION = re.compile(r".*\U0001F310 \[(outgoing|incoming)\] (.+)")
+_LOG_TS = re.compile(r"(?P<time>\d{2}:\d{2}:\d{2})(?:\.\d+)?")
+_LINE_TRANSCRIPT = re.compile(r".*\U0001F3A4 \[(?:S[12]\s+)?(?P<direction>outgoing|incoming)\] (?P<text>.+)")
+_LINE_TRANSLATION = re.compile(r".*\U0001F310 \[(?:S[12]\s+)?(?P<direction>outgoing|incoming)\] (?P<text>.+)")
 
 
 def _ensure_call():
@@ -124,27 +126,59 @@ def _resume_call(call_id):
         return True
 
 
+def _line_timestamp(line, fallback=None):
+    match = _LOG_TS.search(line or "")
+    if not match:
+        return fallback or time.strftime("%Y-%m-%d %H:%M:%S")
+    today = datetime.now().strftime("%Y-%m-%d")
+    return f"{today} {match.group('time')}"
+
+
+def _parse_line(line):
+    """Return parsed log speech event or None."""
+    m = _LINE_TRANSCRIPT.match(line)
+    if m:
+        return {
+            "kind": "transcript",
+            "direction": m.group("direction"),
+            "text": m.group("text"),
+            "ts": _line_timestamp(line),
+        }
+    m = _LINE_TRANSLATION.match(line)
+    if m:
+        return {
+            "kind": "translation",
+            "direction": m.group("direction"),
+            "text": m.group("text"),
+            "ts": _line_timestamp(line),
+        }
+    return None
+
+
 def _record_line(line):
     """Parse a log line and write utterance to DB if it completes a pair."""
     global _call_pending
-    m = _LINE_TRANSCRIPT.match(line)
-    if m:
-        direction, text = m.group(1), m.group(2)
-        with _call_lock:
-            _call_pending[direction] = {"transcript": text, "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
+    event = _parse_line(line)
+    if not event:
         return
-    m = _LINE_TRANSLATION.match(line)
-    if m:
-        direction, text = m.group(1), m.group(2)
+    if event["kind"] == "transcript":
         with _call_lock:
-            prev = _call_pending.pop(direction, None)
-            if prev:
-                call_id = _ensure_call()
-                speaker = "me" if direction == "outgoing" else "them"
-                conn = _get_db()
-                conn.execute(
-                    "INSERT INTO utterances (call_id, ts, direction, speaker, original, translated) VALUES (?, ?, ?, ?, ?, ?)",
-                    (call_id, prev["ts"], direction, speaker, prev["transcript"], text),
-                )
-                conn.commit()
-                conn.close()
+            _call_pending[event["direction"]] = {
+                "transcript": event["text"],
+                "ts": event["ts"],
+            }
+        return
+
+    direction = event["direction"]
+    with _call_lock:
+        prev = _call_pending.pop(direction, None)
+        if prev:
+            call_id = _ensure_call()
+            speaker = "me" if direction == "outgoing" else "them"
+            conn = _get_db()
+            conn.execute(
+                "INSERT INTO utterances (call_id, ts, direction, speaker, original, translated) VALUES (?, ?, ?, ?, ?, ?)",
+                (call_id, prev["ts"], direction, speaker, prev["transcript"], event["text"]),
+            )
+            conn.commit()
+            conn.close()

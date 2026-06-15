@@ -57,6 +57,10 @@ pub enum Event {
     Error {
         message: String,
     },
+    AudioDeviceLost {
+        direction: String,
+        message: String,
+    },
     Log {
         level: String,
         message: String,

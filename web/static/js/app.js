@@ -10,7 +10,8 @@ const SYSTEM_LOOPBACK_LABEL = 'System output loopback (no microphone)';
 const AI_MEMORY_KEY = 'translator-ai-memory-v1';
 const AI_CALL_HISTORY_KEY = 'translator-ai-call-assistant-v1';
 const AI_MEMORY_MAX = 12;
-const AI_CALL_HISTORY_MAX = 40;
+const AI_CALL_HISTORY_MAX = 80;
+const AI_VISIBLE_CARD_MAX = 80;
 const AI_MEMORY_CONTEXT_MAX = 600;
 const AI_MEMORY_ANSWER_MAX = 900;
 const AI_CALL_ANSWER_MAX = 8000;
@@ -40,6 +41,541 @@ const CROSSTALK_WORD_OVERLAP_MAX_WORDS = 8;
 const CROSSTALK_WORD_OVERLAP_MIN_RATIO = 0.72;
 const SAME_DIRECTION_DUPLICATE_WINDOW_MS = 1_000;
 const SAME_LANGUAGE_TRANSLATION_HINT = 'Translation is ON, but source and target languages are the same. Change language in Settings.';
+const TRANSLATION_OFF_HINT = 'Translation OFF: original speech only';
+const TRANSLATION_ON_HINT = 'Translation ON: translated text is shown';
+const TRANSCRIPT_HIDDEN_ON_HINT = 'Transcript hidden: AI Assistant still receives context';
+const TRANSCRIPT_HIDDEN_OFF_HINT = 'Show transcript bubbles';
+const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
+const KEYTERM_QUERY_PREFIX = '&keyterm=';
+const MAX_KEYTERM_QUERY_CHARS = 2500;
+const PIPELINE_RESTART_STOP_POLL_LIMIT = 20;
+const PIPELINE_RESTART_STOP_POLL_DELAY_MS = 120;
+const PIPELINE_RESTART_START_SETTLE_MS = 400;
+const AI_SUGGESTION_DEBOUNCE_MS = 900;
+const AI_SUGGESTION_RETRY_DELAY_MS = 600;
+const AI_QUICK_REQUEST_TIMEOUT_MS = 15000;
+const AI_DETAIL_REQUEST_TIMEOUT_MS = 30000;
+const AI_REQUEST_TIMEOUT_MESSAGE = 'AI request timed out';
+const AI_COOLDOWN_STATUS = 'cooldown';
+const AI_UNAVAILABLE_STATUS = 'unavailable';
+const AI_ONLY_EMPTY_STATUS = 'AI Assistant has no grounded answer yet. Capture continues.';
+const AI_QUICK_PROVIDER = 'groq';
+const AI_DETAIL_PROVIDER = 'codex';
+const AUDIO_DEVICE_WATCH_INTERVAL_MS = 30000;
+const ENGINE_STOP_GRACE_MS = 8000;
+const DEEPGRAM_KEYTERMS = Object.freeze([
+  'Kubernetes',
+  'kubectl',
+  'Docker',
+  'DevOps',
+  'SecOps',
+  'DevSecOps',
+  'K2',
+  'PC/SC',
+  'PC/SC reader',
+  'card reader',
+  'smart card',
+  'OWASP',
+  'OWASP Top 10',
+  'XSS',
+  'CSRF',
+  'SSRF',
+  'RCE',
+  'CVE',
+  'CVSS',
+  'JWT',
+  'OAuth',
+  'mTLS',
+  'TLS',
+  'Base64',
+  'B64',
+  'X.509',
+  'certificate',
+  'cert',
+  'certificate chain',
+  'public key',
+  'private key',
+  'WAF',
+  'SAST',
+  'DAST',
+  'SCA',
+  'SBOM',
+  'Software Bill of Materials',
+  'IDOR',
+  'Burp Suite',
+  'Burp Suite Professional',
+  'OWASP ZAP',
+  'OpenVAS',
+  'Nuclei',
+  'Semgrep',
+  'DefectDojo',
+  'Trivy',
+  'Wazuh',
+  'SOC analyst',
+  'runbook',
+  'bastion',
+  'IAM',
+  'IAM policies',
+  'cluster-admin',
+  'node exporter',
+  'Grafana',
+  'Loki',
+  'Vault',
+  'HashiCorp Vault',
+  'threat modeling',
+  'secrets scanning',
+  'tcpdump',
+  'traceroute',
+  'Terraform',
+  'GitLab',
+  'GitLab Runner',
+  'CI/CD',
+  'Harbor',
+  'Nexus',
+  'Jira',
+  'Google Cybersecurity',
+  'Keycloak',
+  'SonarQube',
+  'Sonar',
+  'Semgrep',
+  'OIDC',
+  'YubiKey',
+  'CryptoPro',
+  'CryptoPro CSP',
+  'CryptoPro plugin',
+  'CSP',
+  'SSH',
+  'SSH keys',
+  'GOST',
+  'TOTP',
+  'HSM',
+  'Rutoken',
+  'Google Authenticator',
+  'Policy Gateway',
+  'policy-server',
+  'policy server',
+  'Treasure API',
+  'Astra Linux',
+  'Astra',
+  'USB socket',
+  'socket',
+  'sudo',
+  'root',
+  'Firecracker',
+  'node group',
+  'Prometheus',
+  'registry',
+  'egress',
+  'feature toggle',
+  'FeatureToggle',
+  'TDX',
+  'VM',
+  'init',
+  'polling',
+  'downtime',
+  'Kafka',
+  'Selectel',
+  'Global Router',
+  'Control Plane',
+  'Zero Trust',
+  'Active Directory',
+  'Microsoft AD',
+  'VPN',
+  'VLAN',
+  'VRF',
+  'BGP',
+  'OSPF',
+  'NAT',
+  'DMZ',
+  'NGFW',
+  'IDS',
+  'IPS',
+  'NAC',
+  'NTA',
+  'SOC',
+  'L2',
+  'L3',
+  'L7',
+  'fuzzing',
+  'SDLC',
+  'Dockerfile',
+  'namespace',
+  'cgroups',
+  'kubectl exec',
+  'nodeSelector',
+  'pod anti-affinity'
+]);
+const APPSEC_TERM_REPLACEMENTS = Object.freeze([
+  [/\bтандж(?:и|ем|ему|а|ей)?\b/giu, 'Tangem'],
+  [/(\b(?:что\s+такое|объясни|расскажи\s+(?:про|о)|зачем\s+нужен|чем\s+отличается)\s+)даст\b/giu, '$1DAST'],
+  [/(\b(?:что\s+такое|объясни|расскажи\s+(?:про|о)|зачем\s+нужен|чем\s+отличается)\s+)саст\b/giu, '$1SAST'],
+  [/(\b(?:что\s+такое|объясни|расскажи\s+(?:про|о)|зачем\s+нужен|чем\s+отличается)\s+)ска\b/giu, '$1SCA'],
+  [/\bSecurity\s+assistant\s+of\s+crypto\s+wallet\s+back\s+end\s+IP\s+before\s+a\s+major\s+release\b/gi, 'Security assessment of crypto wallet backend and API before a major release'],
+  [/\bWhat\s+a\s+p\s+vulnerabilities\s+will\s+prioritize\s+when\s+testing\s+and\s+on\s+custodian\s+crypto\s+wallet\s+application\s+and\s+why\b/gi, 'What API vulnerabilities would you prioritize when testing a non-custodial crypto wallet application and why'],
+  [/\bCan\s+you\s+describe\s+a\s+real\s+vulnerability\s+you\s+found\s+in\s+web\s+application,\s+opaque,\s+how\s+web\s+impact\s+and\s+how\s+you\s+help\s+me\s+to\s+fix\s+it\b/gi, 'Can you describe a real vulnerability you found in a web application or API, how you proved impact, and how you helped to fix it'],
+  [/\bHow\s+well\s+do\s+you\s+validate\s+Wizard\s+and\s+Bug\s+bounty\s+report\s+is\s+actually\s+exploitable\s+or\s+just\s+your\s+or\s+just\s+theoretical\b/gi, 'How would you validate whether a bug bounty report is actually exploitable or just theoretical'],
+  [/\bHow\s+old\s+do\s+you\s+build\s+a\s+security\s+test\s+strategy\s+for\s+web\s+application\s+by\s+Cantera's\s+and\s+strategy\s+for\s+web\s+application\s+by\s+can\s+service\s+and\s+API\s+across\s+pre\s+release\s+and\s+post\s+release\s+stage\b/gi, 'How would you build a security testing strategy for web application, backend services, and APIs across pre-release and post-release stages'],
+  [/\bWatch\s+security\s+risks\s+remain\s+on\s+the\s+backend\s+side\s+if\s+you\s+wallet\s+itself\s+is\s+not\s+custodian\b/gi, 'What security risks remain on the backend side if the wallet itself is non-custodial'],
+  [/\bHow\s+do\s+you\s+decide\s+whether\s+a\s+bad\s+boundary\s+report\s+is\s+critical\s+heights,\s+medium\s+low\s+severity\b/gi, 'How do you decide whether a bug bounty report is critical, high, medium, or low severity'],
+  [/\bIn\s+this\s+to\s+gauge\s+whether\s+I\s+love\s+rule,\s+he\s+is\s+blocking\s+leg\s+team\s+users\s+or\s+only\s+malicious\s+traffic\b/gi, 'How would you gauge whether a WAF rule is blocking legitimate users or only malicious traffic'],
+  [/\bHow\s+old\s+do\s+you\s+build\s+security\s+code\s+and\s+training\s+for\s+back\s+end\s+developers\s+who\s+work\s+with\s+Abyss\b/gi, 'How would you build secure coding training for backend developers who work with APIs'],
+  [/\bTo\s+integrate\s+SAS\s+into\s+a\s+CS\s+and\s+you\s+without\s+blocking\s+every\s+match\.\s*Request\b/gi, 'How would you integrate SAST into CI/CD without blocking every merge request'],
+  [/\bHow\s+old\s+do\s+you\s+tune\s+in\s+above\s+her\s+rule\s+that\s+Melox\s+and\s+mobile\s+IP\s+traffic\b/gi, 'How would you tune a WAF rule that blocks legitimate mobile API traffic'],
+  [/\bHow\s+do\s+you\s+taste\s+my\s+mobile\s+IP\s+traffic\s+for\s+after\s+two\s+authorization\s+and\s+for\s+And\s+follow\s+flows\b/gi, 'How do you test deep links and universal links for account takeover risks'],
+  [/\bWhy\s+wall\s+three\s+tests\s+were\s+there\s+an\s+API\s+endpoint\?\s*Clicks\s+sensitive\s+wallet\s+metadata\s+throughout\s+a\s+xsife\.expo\s+exp\s+exp\s+exp\b/gi, 'What would you test when an API endpoint leaks sensitive wallet metadata through XSS exposure'],
+  [/\bI\s+will\s+suit\s+this\s+weather\s+cause\s+an\s+exploitable\s+riser\s+that\s+just\s+misconfigurate\b/gi, 'How would you decide whether this is an exploitable risk or just a misconfiguration'],
+  [/\bOh,\s*hold\s+to\s+your\s+comfy\s+clothes\.\s*Api\s+shield\.\s*She's\s+having\s+validation\.\s*And\s+what\s+traffic\s+vault\s+you\s+put\s+into\s+lock\s+mode\s+before\s+unlocking\b/gi, 'How would you configure Cloudflare API Shield schema validation, and what traffic would you put into log mode before blocking'],
+  [/\bhold\s+to\s+your\s+comfy\s+clothes\b/gi, 'configure Cloudflare'],
+  [/\bApi\s+shield\b/gi, 'API Shield'],
+  [/\bShe's\s+having\s+validation\b/gi, 'schema validation'],
+  [/\btraffic\s+vault\b/gi, 'traffic would'],
+  [/\block\s+mode\b/gi, 'log mode'],
+  [/\bbefore\s+unlocking\b/gi, 'before blocking'],
+  [/\bI\s+love\s+rule\b/gi, 'WAF rule'],
+  [/\bleg\s+team\s+users\b/gi, 'legitimate users'],
+  [/\bsecurity\s+code\s+and\s+training\b/gi, 'secure coding training'],
+  [/\bback\s+end\s+developers\b/gi, 'backend developers'],
+  [/\bwork\s+with\s+Abyss\b/gi, 'work with APIs'],
+  [/\bClicks\s+sensitive\s+wallet\s+metadata\b/gi, 'leaks sensitive wallet metadata'],
+  [/\bxsife\.expo\s+exp\s+exp\s+exp\b/gi, 'XSS exposure'],
+  [/\bexploitable\s+riser\b/gi, 'exploitable risk'],
+  [/\bmisconfigurate\b/gi, 'misconfiguration'],
+  [/\bsecurity\s+assistance\s+Crypto\s+World\s+Impacment\s+up\s+before\s+a\s+major\s+race\b/gi, 'security assurance of crypto wallet implementation before a major release'],
+  [/\bCrypto\s+World\s+Impacment\b/gi, 'crypto wallet implementation'],
+  [/\bmajor\s+race\b/gi, 'major release'],
+  [/\ball\s+shared\s+priorities\s+I\s+desires\b/gi, 'would you prioritize'],
+  [/\bnon\s+custodial\s+crypto\?\s*Wallet\s+application\b/gi, 'non-custodial crypto wallet application'],
+  [/\bHow\s+old\s+are\s+you\s+to\s+sew\s+to\s+creation\s+authorization\s+logic\b/gi, 'How would you secure authorization logic'],
+  [/\bVapor\s+in\s+web\s+application\s+or\s+IP\b/gi, 'a web application or API'],
+  [/\bHow\s+wolf\s+do\s+you\s+validate\s+where\s+embark\s+bounty\s+reports\b/gi, 'How would you validate whether bug bounty reports'],
+  [/\bactually\s+exploit\s+exploitable\b/gi, 'actually exploitable'],
+  [/\bHow\s+old\s+do\s+you\s+tune\s+cloud\s+photo\s+of\s+of\s+IP\s+shield\s+Aurelius\b/gi, 'How would you tune Cloudflare or IP shield rules'],
+  [/\blegume\s+users\b/gi, 'legitimate users'],
+  [/\bbusiness\s+log\s+for\s+vulnerabilities\s+that\s+Aftermath\s+scanner\s+usually\s+miss\b/gi, 'business logic vulnerabilities that automated scanners usually miss'],
+  [/\bapplication\s+security\s+check\s+and\s+c\s*s\s*c\s*d\s+pipeline\b/gi, 'application security checks into a CI/CD pipeline'],
+  [/\bSAS\s+into\s+a\s+CS\s+and\s+you\b/gi, 'SAST into CI/CD'],
+  [/\bblocking\s+every\s+match\.\s*Request\b/gi, 'blocking every merge request'],
+  [/\babove\s+her\s+rule\b/gi, 'WAF rule'],
+  [/\bMelox\s+and\s+mobile\s+IP\s+traffic\b/gi, 'blocks legitimate mobile API traffic'],
+  [/\btaste\s+my\s+mobile\s+IP\s+traffic\b/gi, 'test deep links and universal links'],
+  [/\bafter\s+two\s+authorization\s+and\s+for\s+And\s+follow\s+flows\b/gi, 'account takeover risks'],
+  [/\bslowing\s+down\s+the\s+wall\s+press\b/gi, 'slowing down the workflow'],
+  [/\bAppian\s+point\s+click\s+sensitive\s+OLED\s+relative\s+metadata\b/gi, 'API endpoint leaks sensitive object-level metadata'],
+  [/\bhow\s+well\s+do\s+you\s+assess\?\s*Severity\s+and\s+communication\s+the\s+risk\s+to\s+in\s+generic\b/gi, 'how would you assess severity and communicate the risk to engineering'],
+  [/\bHow\s+old\s+do\s+you\s+build\s+a\s+security\s+test\s+to\s+stretch\s+any\s+four\s+web\s+application\s+back\s+in\s+service\s+and\s+API\b/gi, 'How would you build a security testing strategy for web application, backend services, and APIs'],
+  [/\bacross\s+the\s+across\s+pre\s+release\s+and\s+post\s+release\s+stage\b/gi, 'across pre-release and post-release stages'],
+  [/\bSoftware\s+бил(?:\s+в)?\s+materials\b/gi, 'Software Bill of Materials'],
+  [/\bSoftware\s+build\s+materials\b/gi, 'Software Bill of Materials'],
+  [/\bWASP\s+TOP\s+TEN\b/gi, 'OWASP Top 10'],
+  [/\bWASP\s+TOP\s+10\b/gi, 'OWASP Top 10'],
+  [/\bWASP\s+TOP\b/gi, 'OWASP Top'],
+  [/\bOWASP\s+TOP\s+TEN\b/gi, 'OWASP Top 10'],
+  [/\bOWASP\s+TOP\s+10\b/gi, 'OWASP Top 10'],
+  [/\bOWASP\s+TOP\b/gi, 'OWASP Top'],
+  [/васп\s+топ\s+тен/giu, 'OWASP Top 10'],
+  [/васп\s+топ\s+10/giu, 'OWASP Top 10'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])с\s*бом(?:ов|ы)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1SBOM'],
+  [/\bSasta\b/gi, 'SAST'],
+  [/саста/giu, 'SAST'],
+  [/\bDasta\b/gi, 'DAST'],
+  [/даста/giu, 'DAST'],
+  [/\bd\s*DevOps\b/gi, 'DevOps'],
+  [/\bdelops\b/gi, 'DevOps'],
+  [/\bdevelops\b/gi, 'DevOps'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])дивопс(?:а|у|ом|е|ы|ов)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1DevOps'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])диопс(?:а|у|ом|е|ы|ов)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1DevOps'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])девопс(?:а|у|ом|е|ы|ов)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1DevOps'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])удивовц(?:а|у|ом|е|ы|ов)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1DevOps'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])ватсве\s+девопсы(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1DevOps'],
+  [/\bватсве\s+DevOps\b/giu, 'DevOps'],
+  [/\bm\s+tls\b/gi, 'mTLS'],
+  [/\bMTLS\b/g, 'mTLS'],
+  [/\bmtls\b/g, 'mTLS'],
+  [/\bTCP\s+Dumb\b/gi, 'tcpdump'],
+  [/\btcp\s+dumb\b/gi, 'tcpdump'],
+  [/\bTcp-дам\b/gi, 'tcpdump'],
+  [/\btcp-дам\b/gi, 'tcpdump'],
+  [/тсп-дам/giu, 'tcpdump'],
+  [/\bBISC\s*-?\s*64\b/gi, 'Base64'],
+  [/\bBIC\s*-?\s*64\b/gi, 'Base64'],
+  [/\bBIS\s*-?\s*64\b/gi, 'Base64'],
+  [/\bB\s*64\b/gi, 'B64'],
+  [/бейс(?:ик)?\s*-?\s*64/giu, 'Base64'],
+  [/би\s*си\s*-?\s*64/giu, 'Base64'],
+  [/\bSertu\b/gi, 'cert'],
+  [/серту/giu, 'cert'],
+  [/\btrife\s+roads\b/gi, 'traceroute'],
+  [/\btrife\s+route\b/gi, 'traceroute'],
+  [/\btrace\s+route\b/gi, 'traceroute'],
+  [/\bGET\s*Lab\b/gi, 'GitLab'],
+  [/\bGETLab\b/gi, 'GitLab'],
+  [/\bGetLab\b/g, 'GitLab'],
+  [/\bGitlab\b/g, 'GitLab'],
+  [/\bgetlab\b/g, 'GitLab'],
+  [/\bgetlub\b/gi, 'GitLab'],
+  [/\bdeclub\b/gi, 'GitLab'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])г[еи]т\s*лаб(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1GitLab'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])г[еи]тлаб(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1GitLab'],
+  [/\bArvor\b/gi, 'Harbor'],
+  [/\bHarva\b/gi, 'Harbor'],
+  [/\bHarbot\b/gi, 'Harbor'],
+  [/\btirebor\b/gi, 'Harbor'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])харбор(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1Harbor'],
+  [/\bNetsus\b/gi, 'Nexus'],
+  [/\bExas\b/gi, 'Nexus'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])нексус(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1Nexus'],
+  [/\bVolta\b/gi, 'Vault'],
+  [/\bValta\b/gi, 'Vault'],
+  [/\bWalt\b/g, 'Vault'],
+  [/\bwalt\b/g, 'Vault'],
+  [/\bLotWorld\b/gi, 'Vault'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])волт(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1Vault'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])конфлюенс(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1Confluence'],
+  [/\bTeam\s+City\b/gi, 'TeamCity'],
+  [/\bTwe\s+City\b/gi, 'TeamCity'],
+  [/\bteamcity\b/gi, 'TeamCity'],
+  [/\bnot\s+group\b/gi, 'node group'],
+  [/\bnode\s*group\b/gi, 'node group'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])н[оа]д[-\s]?групп(?:а|е|у|ой|ы)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1node group'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])нот[-\s]?групп(?:а|е|у|ой|ы)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1node group'],
+  [/\bCI\s*CD\b/gi, 'CI/CD'],
+  [/\bCICD\b/gi, 'CI/CD'],
+  [/\bICD\b/gi, 'CI/CD'],
+  [/си\s*ай\s*си\s*ди/giu, 'CI/CD'],
+  [/\bJaba\b/g, 'job'],
+  [/\bJoba\b/g, 'job'],
+  [/\bboost\b/gi, 'Burp Suite'],
+  [/\bburg\s+suite(?:\s+professional)?\b/gi, 'Burp Suite Professional'],
+  [/\bburp\s+suite\s+professional\b/gi, 'Burp Suite Professional'],
+  [/\bburp\s+suite\b/gi, 'Burp Suite'],
+  [/б[её]рп\s+сь?ют(?:а|е|ом)?/giu, 'Burp Suite'],
+  [/бурп\s+сь?ют(?:а|е|ом)?/giu, 'Burp Suite'],
+  [/\bо\s+вас\s+к\s+западу\b/giu, 'OWASP ZAP'],
+  [/\bо\s+вас\s+зап\b/giu, 'OWASP ZAP'],
+  [/овасп\s+зап/giu, 'OWASP ZAP'],
+  [/начать\s+с\s+запад[а-я]*/giu, 'начать с OWASP ZAP'],
+  [/\bNucai\b/gi, 'Nuclei'],
+  [/\bнукай\b/giu, 'Nuclei'],
+  [/\bнюклей\b/giu, 'Nuclei'],
+  [/\bfirecrecards\b/gi, 'Firecracker'],
+  [/\bfirecraker\b/gi, 'Firecracker'],
+  [/\bfirecracker\b/gi, 'Firecracker'],
+  [/\bSingrep\b/gi, 'Semgrep'],
+  [/\bSimGreb\b/gi, 'Semgrep'],
+  [/\bsing\s+gr[ae]p\b/gi, 'Semgrep'],
+  [/\bsing\s+reb\b/gi, 'Semgrep'],
+  [/\basting\s+gr[ae]p\b/gi, 'Semgrep'],
+  [/сем\s*греп/giu, 'Semgrep'],
+  [/семгреп/giu, 'Semgrep'],
+  [/\beTrivy\b/gi, 'Trivy'],
+  [/\bSONAR\b/g, 'SonarQube'],
+  [/\bSonar\b/g, 'SonarQube'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])сонар(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1SonarQube'],
+  [/\bkicklog\b/gi, 'Keycloak'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])киклак(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1Keycloak'],
+  [/\bjiva\b/gi, 'Jira'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])джир(?:а|е|у|ой|ы)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1Jira'],
+  [/\bGoogle\s+Server\s+Secutive\b/gi, 'Google Cybersecurity'],
+  [/\bGoogle\s+Cyber\s+Security\b/gi, 'Google Cybersecurity'],
+  [/\bkey\s*clock\b/gi, 'Keycloak'],
+  [/\bkeyclock\b/gi, 'Keycloak'],
+  [/\bkeklock\b/gi, 'Keycloak'],
+  [/киклок/giu, 'Keycloak'],
+  [/кеклок/giu, 'Keycloak'],
+  [/\bOEDC\b/gi, 'OIDC'],
+  [/\bOADC\b/gi, 'OIDC'],
+  [/\bo\s*-?\s*adc\b/gi, 'OIDC'],
+  [/\bPDX\b/gi, 'TDX'],
+  [/\bFDX\b/gi, 'TDX'],
+  [/\bTDM\b/gi, 'TDX'],
+  [/\bQD\s*2\b/gi, 'K2'],
+  [/\bK\s*2\b/gi, 'K2'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])ик\s*-?\s*2(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1K2'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])и\s+к\s*-?\s*2(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1K2'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])ка\s*-?\s*2(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1K2'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])к\s*2(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1K2'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])мк\s*2(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1K2'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])ек\s*2(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1K2'],
+  [/\bканал\s+K2\b/gi, 'канал K2'],
+  [/\bканал\s+к\s*2\b/giu, 'канал K2'],
+  [/канал\s+ик\s*-?\s*2/giu, 'канал K2'],
+  [/канал\s+ка\s*-?\s*2/giu, 'канал K2'],
+  [/\bhsam\b/gi, 'HSM'],
+  [/\bASSAH\b/gi, 'SSH'],
+  [/\bSSAH\b/gi, 'SSH'],
+  [/\bTvm\b/g, 'VM'],
+  [/\bNIT\b/g, 'init'],
+  [/\bmini\s+polying\b/gi, 'mini polling'],
+  [/\bpolying\b/gi, 'polling'],
+  [/\bdimetime\b/gi, 'downtime'],
+  [/\bdone\s+time\b/gi, 'downtime'],
+  [/\bPCC\s+ридер\b/giu, 'PC/SC reader'],
+  [/\bUSB\s+PCC\s+ридер\b/giu, 'USB PC/SC reader'],
+  [/\bPCC\b/g, 'PC/SC'],
+  [/\bControl\s+plan\b/gi, 'Control Plane'],
+  [/\bControl\s+play\b/gi, 'Control Plane'],
+  [/\bControl\s+pling\b/gi, 'Control Plane'],
+  [/\bGlobal\s+Road\b/gi, 'Global Router'],
+  [/\bSelectTale\b/gi, 'Selectel'],
+  [/\bSelect\s+tell\b/gi, 'Selectel'],
+  [/\bSliktelry\b/gi, 'Selectel'],
+  [/\bselect\s+tell\b/gi, 'Selectel'],
+  [/\bselectel\b/gi, 'Selectel'],
+  [/селектейл/giu, 'Selectel'],
+  [/селектел(?:л|лу|ла|ом|е)?/giu, 'Selectel'],
+  [/\bUBK\b/gi, 'YubiKey'],
+  [/\bYBK\b/gi, 'YubiKey'],
+  [/юби\s*кей/giu, 'YubiKey'],
+  [/юбикей/giu, 'YubiKey'],
+  [/\bClibreprood\s+tools\b/gi, 'CryptoPro tools'],
+  [/\bCrypto\s*Prood?\s+tools\b/gi, 'CryptoPro tools'],
+  [/\bCrypto\s*Pro\b/gi, 'CryptoPro'],
+  [/\bCryptu\s*Pro\b/gi, 'CryptoPro'],
+  [/\bCryptuPro\b/gi, 'CryptoPro'],
+  [/\bCryptoProp\b/gi, 'CryptoPro'],
+  [/\bCrypto\s+Prop\b/gi, 'CryptoPro'],
+  [/\bCliptoPro\b/gi, 'CryptoPro'],
+  [/\bCrypto\s+Pro\b/gi, 'CryptoPro'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])скрипт(?:а|у|ом|е)?\s+про(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1CryptoPro'],
+  [/крипто\s*про/giu, 'CryptoPro'],
+  [/\bC(?:op|rop)ois\b/gi, 'CryptoPro CSP'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])ксп(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1CSP'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])цсп(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1CSP'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])сиспи(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1CSP'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])хсма?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1HSM'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])хэсэм(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1HSM'],
+  [/\brootoken\b/gi, 'Rutoken'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])рутокен(?:а|у|ом|е|ы)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1Rutoken'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])рутокел(?:а|у|ом|е|ы)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1Rutoken'],
+  [/\bTreshare\s+IP\b/gi, 'Treasure API'],
+  [/\bTreshare\s+API\b/gi, 'Treasure API'],
+  [/\bTreasure\s+IP\b/gi, 'Treasure API'],
+  [/\bCafку\b/giu, 'Kafka'],
+  [/кафку/giu, 'Kafka'],
+  [/кавк(?:а|е|у|ой|и)/giu, 'Kafka'],
+  [/кафк(?:а|е|у|ой|и)/giu, 'Kafka'],
+  [/\bSSSH\b/gi, 'SSH'],
+  [/саша\s+ключ(?:и)?/giu, 'SSH ключи'],
+  [/\bAttP-?код\b/gi, 'TOTP-код'],
+  [/\bAuse\s+Provider\b/gi, 'Auth Provider'],
+  [/\bGROPAN\b/gi, 'Grafana'],
+  [/\bLocky\b/gi, 'Loki'],
+  [/\blockey\b/gi, 'Loki'],
+  [/полиси\s+gateway/giu, 'Policy Gateway'],
+  [/\bpolicy\s+server\b/gi, 'policy-server'],
+  [/полиси[-\s]+сервер(?:а|у|ом|е)?/giu, 'policy-server'],
+  [/сервер\s+полисе/giu, 'policy-server'],
+  [/монадатные\s+политики/giu, 'мандатные политики'],
+  [/политики\s+астеры/giu, 'политики Astra'],
+  [/мандатные\s+политики\s+астра/giu, 'мандатные политики Astra'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])астр(?:а|ы|е|ой)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1Astra'],
+  [/\bSOKET\b/g, 'socket'],
+  [/\bUSB[-\s]+сокет(?:а|у|ом|е)?\b/giu, 'USB socket'],
+  [/юсб[-\s]+сокет(?:а|у|ом|е)?/giu, 'USB socket'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])сокет(?:а|у|ом|е)?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1socket'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])сс?удо(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1sudo'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])судов(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1sudo'],
+  [/права\s+рута/giu, 'права root'],
+  [/(^|[^A-Za-zА-Яа-яЁё0-9_])рутом?(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu, '$1root'],
+  [/\bEGRS\b/g, 'egress'],
+  [/\bRegistery\b/gi, 'registry'],
+  [/\bpro\s+Metal(?:s)?\b/gi, 'Prometheus'],
+  [/\bGRAFAN\b/g, 'Grafana'],
+  [/\bFeature\s*Toggle\b/gi, 'FeatureToggle'],
+  [/\bfitch\b/gi, 'feature'],
+  [/фич[еи]стог(?:а|у|ой|е|и)?/giu, 'feature toggle'],
+  [/\btdx\b/g, 'TDX'],
+  [/check[-\s]+сумм(?:а|у|ой|е|ы)?/giu, 'checksum'],
+  [/чек[-\s]+сумм(?:а|у|ой|е|ы)?/giu, 'checksum'],
+  [/оптулокн(?:о|а|у|ом|е)?/giu, 'оптоволокно'],
+  [/автоволокн(?:о|а|у|ом|е)?/giu, 'оптоволокно'],
+  [/\bgost\b/gi, 'GOST'],
+  [/\bjson\b/g, 'JSON'],
+  [/\bphysing\b/gi, 'fuzzing'],
+  [/физинг/giu, 'fuzzing'],
+  [/фазинг/giu, 'fuzzing'],
+  [/\bSDLS\b/gi, 'SDLC'],
+  [/сдлс/giu, 'SDLC'],
+  [/\bevopsing\b/gi, 'DevOps'],
+  [/\bevops\b/gi, 'DevOps'],
+  [/\bsecups\b/gi, 'SecOps'],
+  [/\bsecDojo\b/g, 'SecOps'],
+  [/\bdefsy\s+cops\b/gi, 'DevSecOps'],
+  [/\bdev\s+sec\s+ops\b/gi, 'DevSecOps'],
+  [/АВС(?:е|а)?/giu, 'AWS'],
+  [/\bABS\b/g, 'AWS'],
+  [/\bAccessS\b/gi, 'XSS'],
+  [/эксессесс/giu, 'XSS'],
+  [/\bwav\b/gi, 'WAF'],
+  [/\bCors\b/gi, 'CORS'],
+  [/\bJavaTi\s+токен\b/gi, 'JWT токен'],
+  [/\bTownScript\b/gi, 'TypeScript'],
+  [/нот\s+на\s+до/giu, 'Node.js'],
+  [/нот\s+знаком/giu, 'Node знаком'],
+  [/с\s+нодой\s+как/giu, 'с Node.js как'],
+  [/на\s+ноде\s+всё\s+написано/giu, 'на Node.js всё написано'],
+  [/\bSAG\s+ключи\b/giu, 'SSH ключи'],
+  [/саг\s+ключи/giu, 'SSH ключи'],
+  [/\bProdeConder\b/gi, 'prod contour'],
+  [/\bProdeConture\b/gi, 'prod contour'],
+  [/без\s+практис/giu, 'best practices'],
+  [/hyper\s+liquid/giu, 'Hyperliquid'],
+  [/aster\s+liter/giu, 'Aster'],
+  [/\bdrivy\b/gi, 'Trivy'],
+  [/\bTriV\b/g, 'Trivy'],
+  [/3\s+виллы/giu, 'Trivy'],
+  [/триви/giu, 'Trivy'],
+  [/три\s*ви/giu, 'Trivy'],
+  [/\bdefect\s+dother\b/gi, 'DefectDojo'],
+  [/\bdefect\s+dog\b/gi, 'DefectDojo'],
+  [/\beffect\s+dog\b/gi, 'DefectDojo'],
+  [/\bdefect\s+dojo\b/gi, 'DefectDojo'],
+  [/дефект\s+доджо/giu, 'DefectDojo'],
+  [/\bдо\s+даст\b/giu, 'до DAST'],
+  [/\bдальше\s+уже\s+Dust\b/giu, 'дальше уже DAST'],
+  [/\bсначала\s+сделать\s+3(?=,\s+потом\s+сделать\s+DefectDojo)/giu, 'сначала сделать Trivy'],
+  [/\bвозух\b/giu, 'Wazuh'],
+  [/\bс\s+воздухом\b/giu, 'с Wazuh'],
+  [/\bс\s+воздуха\b/giu, 'с Wazuh'],
+  [/\bчерез\s+воздух\b/giu, 'через Wazuh'],
+  [/\bвазу\b/giu, 'Wazuh'],
+  [/\bPassecurity\b/gi, 'AppSec security'],
+  [/сока\s+налиток/giu, 'SOC analyst'],
+  [/сок\s+аналитик/giu, 'SOC analyst'],
+  [/рандбук(?:а|и|ов|ом)?/giu, 'runbook'],
+  [/ранбук(?:а|и|ов|ом)?/giu, 'runbook'],
+  [/\bнод\s+э?CSPортер\b/giu, 'node exporter'],
+  [/\bnode\s+э?CSPортер\b/giu, 'node exporter'],
+  [/\beam\s+politik\b/gi, 'IAM policies'],
+  [/ай\s*эм\s+политик(?:и)?/giu, 'IAM policies'],
+  [/\bcluster\s+admin\b/gi, 'cluster-admin'],
+  [/кластер\s+админ/giu, 'cluster-admin'],
+  [/\bforwall\b/gi, 'firewall'],
+  [/\bstagejet\b/gi, 'stage'],
+  [/\bstatejet\b/gi, 'stage'],
+  [/\bCustomed\b/gi, 'Custodian'],
+  [/\bCustodians\b/gi, 'Custodian'],
+  [/\bOpport\s+GraphQL\b/gi, 'GraphQL'],
+  [/\bICYNITWALL\b/gi, 'HashiCorp Vault'],
+  [/\bGit\s+Postgreat\s+Postgreat\s+Patched\s+Elete\b/gi, 'GET, POST, PUT, PATCH, DELETE'],
+  [/\bGit\s+Postgreat\s+Postgreat\s+Patched\s+Delete\b/gi, 'GET, POST, PUT, PATCH, DELETE'],
+  [/\bGit\s+Postgreat\s+Patched\s+Elete\b/gi, 'GET, POST, PATCH, DELETE'],
+  [/\bметоде\s+Git\b/giu, 'методе GET'],
+  [/\bу\s+Git\b/giu, 'у GET'],
+  [/\bв\s+Git\b/giu, 'в GET'],
+  [/\bGit\s+это\b/giu, 'GET это'],
+  [/\bGit\s+есть\s+body\b/giu, 'GET есть body'],
+  [/гетто\s+и\s+поста/giu, 'GET и POST'],
+  [/\bPostgreat\b/gi, 'POST'],
+  [/\bPatched\s+Elete\b/gi, 'PATCH, DELETE'],
+  [/\bPatched\s+Delete\b/gi, 'PATCH, DELETE'],
+  [/\bElete\b/g, 'DELETE'],
+  [/\bforized\.?\s+Keys\b/gi, 'authorized_keys'],
+  [/\bauthorized\.\s+Keys\b/gi, 'authorized_keys'],
+  [/\bBinSH\b/g, '/bin/sh'],
+  [/\bBASP\b/g, 'bash'],
+  [/\bCWE\s+TLS\b/gi, 'kubectl exec']
+]);
 
 let stats = { stt: [], trl: [], tts: [], lat: [], count: 0 };
 let muteState = { outgoing: false, incoming: false };
@@ -53,6 +589,7 @@ let sessionStart = Date.now();
 let bookmarkFilterOn = false;
 let textOnlyMode = false;
 let transcriptOnlyMode = false;
+let transcriptHiddenMode = false;
 let allMessages = [];
 let currentSettings = {};
 let availableAudioInputs = [];
@@ -71,6 +608,7 @@ let assistantMsgEl = null;
 let assistantEntriesEl = null;
 let activeAssistantEntry = null;
 let aiSuggestionsQueued = false;
+let aiSuggestionRequestSeq = 0;
 let latestAssistantAnswer = '';
 let assistantMemory = loadAssistantMemory();
 let assistantMemoryRendered = false;
@@ -81,6 +619,9 @@ let resumeAutoStart = false;
 let bootReady = false;
 let engineReady = false;
 let activePromptKind = '';
+let audioDeviceWatchTimer = null;
+let audioHotplugBusy = false;
+let audioDeviceSignature = '';
 
 // ===== API key masking (no password detection) =====
 document.querySelectorAll('.sp-key').forEach(input => {
@@ -416,7 +957,9 @@ function providerLabel(provider) {
   if (normalized === 'codex') return 'ChatGPT / Codex';
   if (normalized === 'auto') return 'Auto';
   if (normalized === 'openrouter') return 'OpenRouter';
+  if (normalized === 'gemini') return 'Gemini';
   if (normalized === 'groq') return 'Groq';
+  if (normalized === 'groq_backup') return 'Groq backup';
   return 'LLM';
 }
 
@@ -472,26 +1015,53 @@ function updateAssistantCard(card, answer, provider, state) {
 
   card.classList.toggle('loading', state === 'loading' || state === 'partial');
   card.classList.toggle('error', state === 'error');
-  status.textContent = (state === 'loading' || state === 'partial')
-    ? 'Thinking...'
-    : (provider ? providerLabel(provider) : (state === 'error' ? 'Error' : ''));
+  card.classList.toggle('cooldown', state === AI_COOLDOWN_STATUS || state === AI_UNAVAILABLE_STATUS);
+  if (state === 'loading' || state === 'partial') {
+    status.textContent = 'Thinking...';
+  } else if (provider) {
+    status.textContent = providerLabel(provider);
+  } else if (state === 'error') {
+    status.textContent = 'Error';
+  } else if (state === AI_COOLDOWN_STATUS || state === AI_UNAVAILABLE_STATUS) {
+    status.textContent = 'Waiting';
+  } else {
+    status.textContent = '';
+  }
   body.textContent = answerText || (state === 'loading' ? '1) Thinking...\n\n2) Waiting for the detailed answer...' : 'No answer yet');
 }
 
+function latestReusableAssistantStatusCard() {
+  const cards = Array.from(chat.querySelectorAll('.assistant-msg.assistant-inline'));
+  const card = cards[cards.length - 1] || null;
+  if (!card) return null;
+  return card.classList.contains('cooldown') || card.classList.contains('loading') ? card : null;
+}
+
 function renderAssistantAnswer(answer, provider, state) {
+  const keepPinned = isChatNearBottom();
   latestAssistantAnswer = answer || '';
   if (state === 'loading') {
-    activeAssistantEntry = createAssistantCard(state);
+    activeAssistantEntry = latestReusableAssistantStatusCard() || createAssistantCard(state);
+    updateAssistantCard(activeAssistantEntry, '', '', state);
   } else if (state === 'partial') {
     const card = activeAssistantEntry || createAssistantCard(state);
     updateAssistantCard(card, answer, provider, state);
   } else {
-    const card = activeAssistantEntry || createAssistantCard(state);
+    const statusCard = state === AI_COOLDOWN_STATUS || state === AI_UNAVAILABLE_STATUS
+      ? latestReusableAssistantStatusCard()
+      : null;
+    const card = activeAssistantEntry || statusCard || createAssistantCard(state);
     updateAssistantCard(card, answer, provider, state);
     activeAssistantEntry = null;
     trimAssistantCards();
   }
-  scrollBottom();
+  scrollBottomIfPinned(keepPinned);
+}
+
+function discardActiveAssistantCard() {
+  if (!activeAssistantEntry) return;
+  activeAssistantEntry.remove();
+  activeAssistantEntry = null;
 }
 
 function renderStoredAssistantEntry(entry) {
@@ -570,7 +1140,7 @@ function combineAssistantOptions(quickAnswer, detailAnswer) {
 
 function trimAssistantCards() {
   const cards = Array.from(chat.querySelectorAll('.assistant-msg.assistant-inline'));
-  while (cards.length > 20) {
+  while (cards.length > AI_VISIBLE_CARD_MAX) {
     cards.shift()?.remove();
   }
 }
@@ -589,10 +1159,9 @@ function closeSuggestions() {
   aiSuggestionsOpen = false;
   aiSuggestionsQueued = false;
   document.getElementById('btn-suggestions').classList.remove('on');
-  chat.querySelectorAll('.assistant-msg').forEach(el => el.remove());
+  discardActiveAssistantCard();
   assistantMsgEl = null;
   assistantEntriesEl = null;
-  activeAssistantEntry = null;
   assistantMemoryRendered = false;
 }
 
@@ -617,7 +1186,81 @@ function resetSuggestions(clearMemory = false) {
 function scheduleSuggestionRefresh() {
   if (!aiSuggestionsOpen) return;
   clearTimeout(aiSuggestionTimer);
-  aiSuggestionTimer = setTimeout(() => fetchAiSuggestions(false), 450);
+  aiSuggestionTimer = setTimeout(() => fetchAiSuggestions(false), AI_SUGGESTION_DEBOUNCE_MS);
+}
+
+async function fetchJsonWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const data = await response.json();
+    return { response, data };
+  } catch (e) {
+    if (timedOut || e?.name === 'AbortError' || String(e?.message || '').includes('aborted')) {
+      const err = new Error(AI_REQUEST_TIMEOUT_MESSAGE);
+      err.name = 'TimeoutError';
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function isCurrentSuggestionRequest(requestSeq) {
+  return aiSuggestionsOpen && requestSeq === aiSuggestionRequestSeq;
+}
+
+function isAiCooldownResponse(data) {
+  return data?.status === AI_COOLDOWN_STATUS || data?.status === AI_UNAVAILABLE_STATUS;
+}
+
+function isAiTransientError(error) {
+  const name = String(error?.name || '');
+  const message = String(error?.message || '').toLowerCase();
+  return name === 'TimeoutError'
+    || message.includes('timed out')
+    || message.includes('aborted')
+    || message.includes('cooldown');
+}
+
+function compactAiErrors(errors) {
+  const items = Array.isArray(errors) ? errors : [];
+  return items
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join('; ');
+}
+
+function aiStatusAnswer(data, fallback) {
+  const retry = Number(data?.retry_after || 0);
+  const details = compactAiErrors(data?.errors);
+  if (retry > 0) {
+    return '1) AI Assistant is waiting for provider cooldown (' + retry + 's). ' +
+      'Capture continues.' + (details ? '\n\n' + details : '');
+  }
+  return '1) ' + (fallback || AI_ONLY_EMPTY_STATUS) + (details ? '\n\n' + details : '');
+}
+
+function renderAiOnlyStatus(data, fallback) {
+  const state = data?.status || AI_UNAVAILABLE_STATUS;
+  renderAssistantAnswer(aiStatusAnswer(data, fallback), data?.provider || '', state);
+}
+
+function scheduleAiCooldownRetry(data) {
+  const retrySeconds = Number(data?.retry_after || 0);
+  if (!retrySeconds || retrySeconds < 1 || !aiSuggestionsOpen) return;
+  clearTimeout(aiSuggestionTimer);
+  aiSuggestionTimer = setTimeout(
+    () => fetchAiSuggestions(true),
+    Math.min(retrySeconds + 1, 60) * 1000
+  );
 }
 
 async function fetchAiSuggestions(force) {
@@ -636,6 +1279,7 @@ async function fetchAiSuggestions(force) {
   if (!force && fingerprint === lastSuggestionFingerprint) return;
 
   aiSuggestionsBusy = true;
+  const requestSeq = ++aiSuggestionRequestSeq;
   renderAssistantAnswer('', '', 'loading');
   const basePayload = {
     messages,
@@ -643,31 +1287,54 @@ async function fetchAiSuggestions(force) {
     prompt_context: currentAiPromptContext(),
     my_language: currentSettings.my_language || 'en',
     their_language: currentSettings.their_language || 'en',
-    ai_provider: currentSettings.ai_provider || 'codex'
+    ai_answer_language: currentSettings.ai_answer_language || 'their'
   };
   let quickAnswer = '';
   let quickProvider = '';
   try {
-    const quickResp = await fetch('/api/suggestions', {
+    const quickResult = await fetchJsonWithTimeout('/api/suggestions', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({...basePayload, mode: 'quick'})
-    });
-    const quickData = await quickResp.json();
-    if (!quickResp.ok || quickData.error) {
+      body: JSON.stringify({...basePayload, mode: 'quick', ai_provider: AI_QUICK_PROVIDER})
+    }, AI_QUICK_REQUEST_TIMEOUT_MS);
+    const quickResp = quickResult.response;
+    const quickData = quickResult.data;
+    if (!isCurrentSuggestionRequest(requestSeq)) return;
+    if (isAiCooldownResponse(quickData)) {
+      quickAnswer = aiStatusAnswer(quickData, AI_ONLY_EMPTY_STATUS);
+      quickProvider = quickData.provider || '';
+      lastSuggestionFingerprint = fingerprint;
+      renderAssistantAnswer(quickAnswer, quickProvider, quickData.status || AI_COOLDOWN_STATUS);
+      scheduleAiCooldownRetry(quickData);
+      return;
+    } else if (!quickResp.ok || quickData.error) {
       throw new Error(quickData.error || 'quick suggestion request failed');
+    } else {
+      quickAnswer = quickData.answer || (quickData.suggestions || []).join('\n\n');
+      quickProvider = quickData.provider || '';
+      const quickDisplay = combineAssistantOptions(quickAnswer, 'Thinking...');
+      renderAssistantAnswer(quickDisplay, quickProvider, 'partial');
     }
-    quickAnswer = quickData.answer || (quickData.suggestions || []).join('\n\n');
-    quickProvider = quickData.provider || '';
-    const quickDisplay = combineAssistantOptions(quickAnswer, 'Thinking...');
-    renderAssistantAnswer(quickDisplay, quickProvider, 'partial');
 
-    const detailResp = await fetch('/api/suggestions', {
+    const detailResult = await fetchJsonWithTimeout('/api/suggestions', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({...basePayload, mode: 'detail', quick_answer: quickAnswer})
-    });
-    const detailData = await detailResp.json();
+      body: JSON.stringify({
+        ...basePayload,
+        mode: 'detail',
+        ai_provider: AI_DETAIL_PROVIDER,
+        quick_answer: quickProvider ? quickAnswer : ''
+      })
+    }, AI_DETAIL_REQUEST_TIMEOUT_MS);
+    const detailResp = detailResult.response;
+    const detailData = detailResult.data;
+    if (!isCurrentSuggestionRequest(requestSeq)) return;
+    if (isAiCooldownResponse(detailData)) {
+      lastSuggestionFingerprint = fingerprint;
+      renderAssistantAnswer(quickAnswer, quickProvider, quickAnswer ? 'ready' : AI_COOLDOWN_STATUS);
+      if (quickAnswer) rememberAssistantAnswer(quickAnswer, quickProvider, messages);
+      return;
+    }
     if (!detailResp.ok || detailData.error) {
       throw new Error(detailData.error || 'detailed suggestion request failed');
     }
@@ -678,12 +1345,18 @@ async function fetchAiSuggestions(force) {
     renderAssistantAnswer(answer, provider, answer ? 'ready' : 'empty');
     if (answer) rememberAssistantAnswer(answer, provider, messages);
   } catch (e) {
+    if (!isCurrentSuggestionRequest(requestSeq)) return;
     console.warn('AI suggestions failed:', e);
     if (quickAnswer) {
-      const answer = combineAssistantOptions(quickAnswer, 'Detailed answer unavailable: ' + (e.message || 'AI assistant unavailable'));
+      const answer = isAiTransientError(e)
+        ? quickAnswer
+        : combineAssistantOptions(quickAnswer, 'Detailed answer unavailable: ' + (e.message || 'AI assistant unavailable'));
       lastSuggestionFingerprint = fingerprint;
       renderAssistantAnswer(answer, quickProvider, 'ready');
       rememberAssistantAnswer(answer, quickProvider, messages);
+    } else if (isAiTransientError(e)) {
+      lastSuggestionFingerprint = fingerprint;
+      renderAiOnlyStatus({ status: AI_COOLDOWN_STATUS }, e.message || AI_REQUEST_TIMEOUT_MESSAGE);
     } else {
       renderAssistantAnswer(e.message || 'AI assistant unavailable', '', 'error');
     }
@@ -691,7 +1364,7 @@ async function fetchAiSuggestions(force) {
     aiSuggestionsBusy = false;
     if (aiSuggestionsQueued && aiSuggestionsOpen) {
       aiSuggestionsQueued = false;
-      setTimeout(() => fetchAiSuggestions(false), 150);
+      setTimeout(() => fetchAiSuggestions(false), AI_SUGGESTION_RETRY_DELAY_MS);
     }
   }
 }
@@ -706,18 +1379,14 @@ function toggleBookmarkFilter() {
   chat.querySelectorAll('.direction-label, .time-sep').forEach(el => {
     el.style.display = bookmarkFilterOn ? 'none' : '';
   });
-  scrollBottom();
+  scrollBottom(true);
 }
 
 // ===== Export =====
 function exportChat() {
   const lines = [];
   allMessages.forEach(m => {
-    const dir = speakerPrefix(m.direction);
-    const bk = m.bookmarked ? ' *' : '';
-    if (m.transcript) lines.push('[' + dir + '] ' + m.transcript);
-    lines.push('[' + dir + '] >> ' + m.translation + bk);
-    lines.push('');
+    pushExportMessage(lines, m);
   });
   const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
   const a = document.createElement('a');
@@ -725,6 +1394,27 @@ function exportChat() {
   a.download = 'transcript-' + new Date().toISOString().slice(0, 16).replace(':', '-') + '.txt';
   a.click();
   showToast('Exported!');
+}
+
+function pushExportMessage(lines, message) {
+  const dir = speakerPrefix(message.direction);
+  const bookmarkSuffix = message.bookmarked ? ' *' : '';
+  const transcript = String(message.transcript || '').trim();
+  const translation = String(message.translation || '').trim();
+  const sameText = messageTextsAreSame(transcript, translation);
+
+  if (transcript) {
+    const suffix = sameText || !translation ? bookmarkSuffix : '';
+    lines.push('[' + dir + '] ' + transcript + suffix);
+  }
+  if (translation && !sameText) {
+    lines.push('[' + dir + '] >> ' + translation + bookmarkSuffix);
+  }
+  lines.push('');
+}
+
+function messageTextsAreSame(left, right) {
+  return Boolean(left && right && normalizeMessageText(left) === normalizeMessageText(right));
 }
 
 // ===== Helpers =====
@@ -740,7 +1430,22 @@ function updateStats() {
   document.getElementById('avg-lat').textContent = avg(stats.lat);
   document.getElementById('total').textContent = stats.count;
 }
-function scrollBottom() { chat.scrollTop = chat.scrollHeight; }
+function isChatNearBottom() {
+  const distance = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+  return distance <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
+}
+
+function scrollBottom(force = false) {
+  if (force || isChatNearBottom()) {
+    chat.scrollTop = chat.scrollHeight;
+  }
+}
+
+function scrollBottomIfPinned(keepPinned) {
+  if (keepPinned) {
+    chat.scrollTop = chat.scrollHeight;
+  }
+}
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ===== Time separators =====
@@ -757,7 +1462,11 @@ function maybeAddTimeSep() {
 }
 
 // ===== Typing indicator =====
-function showTyping() { typingEl.classList.add('visible'); scrollBottom(); }
+function showTyping() {
+  const keepPinned = isChatNearBottom();
+  typingEl.classList.add('visible');
+  scrollBottomIfPinned(keepPinned);
+}
 function hideTyping() { typingEl.classList.remove('visible'); }
 
 // ===== Typewriter =====
@@ -766,8 +1475,9 @@ function typewrite(el, text) {
   el.textContent = '';
   function tick() {
     if (i < text.length) {
+      const keepPinned = isChatNearBottom();
       el.textContent += text[i++];
-      scrollBottom();
+      scrollBottomIfPinned(keepPinned);
       setTimeout(tick, 18);
     }
   }
@@ -804,6 +1514,7 @@ function flushPending() {
     ? (pending.transcript || pending.translation || '')
     : (pending.translation || '');
   if (!pending.direction || !displayText) return;
+  const keepPinned = isChatNearBottom();
   const currentMessage = {
     direction: pending.direction,
     transcript: normalizeMessageText(pending.transcript),
@@ -871,7 +1582,7 @@ function flushPending() {
   stats.count++;
   updateStats();
   scheduleSuggestionRefresh();
-  scrollBottom();
+  scrollBottomIfPinned(keepPinned);
   pending = { direction: null, transcript: null, translation: null };
 }
 
@@ -958,7 +1669,7 @@ async function loadResumedCallFromUrl() {
     renderStoredAssistantEntries(callId);
     if (aiSuggestionsOpen && allMessages.length) scheduleSuggestionRefresh();
     showToast(resumeAutoStart ? 'History loaded. Starting...' : 'History loaded. Press Start to continue.');
-    scrollBottom();
+    scrollBottom(true);
     maybeAutoStartResumedCall();
   } catch (e) {
     console.warn('Failed to resume call:', e);
@@ -973,6 +1684,13 @@ function maybeAutoStartResumedCall() {
   setTimeout(() => {
     if (!engineRunning && !engineToggleBusy) toggleEngine();
   }, 350);
+}
+
+function normalizeAppSecTerms(text) {
+  return APPSEC_TERM_REPLACEMENTS.reduce(
+    (current, replacement) => current.replace(replacement[0], replacement[1]),
+    String(text || '').trim()
+  );
 }
 
 function normalizeMessageText(text) {
@@ -1111,7 +1829,14 @@ function isDuplicatePending() {
 }
 
 function processLine(line) {
-  let m = line.match(/^✖ Engine error: (.+)$/);
+  let m = line.match(/^⚠ Audio device lost \[(?:S[12]\s+)?(outgoing|incoming)\]: (.+)$/);
+  if (m) {
+    showToast(('Audio device lost: ' + m[2]).slice(0, 140));
+    void checkAudioDeviceHotplug('native');
+    return;
+  }
+
+  m = line.match(/^✖ Engine error: (.+)$/);
   if (m) {
     showToast(m[1].slice(0, 120));
     void syncEngineState();
@@ -1123,11 +1848,28 @@ function processLine(line) {
   }
 
   m = line.match(/\uD83C\uDFA4 \[(?:S[12]\s+)?(outgoing|incoming)\] (.+)/);
-  if (m) { flushPending(); pending.direction = m[1]; pending.transcript = m[2]; showTyping(); return; }
+  if (m) {
+    flushPending();
+    pending.direction = m[1];
+    pending.transcript = normalizeAppSecTerms(m[2]);
+    showTyping();
+    return;
+  }
   m = line.match(/\uD83C\uDF10 \[(?:S[12]\s+)?(outgoing|incoming)\] (.+)/);
-  if (m) { pending.direction = m[1]; pending.translation = m[2]; flushPending(); return; }
+  if (m) {
+    pending.direction = m[1];
+    if (transcriptOnlyMode) {
+      pending.transcript = pending.transcript || normalizeAppSecTerms(m[2]);
+      pending.translation = pending.transcript;
+    } else {
+      pending.translation = m[2];
+    }
+    flushPending();
+    return;
+  }
   m = line.match(/\u23F1\s+stt=(\d+)ms\s+trl=(\d+)ms\s+tts=(\d+)ms/);
   if (m) {
+    const keepPinned = isChatNearBottom();
     const stt = parseInt(m[1]), trl = parseInt(m[2]), tts = parseInt(m[3]);
     const total = stt + trl + tts;
     stats.stt.push(stt); stats.trl.push(trl); stats.tts.push(tts); stats.lat.push(total);
@@ -1140,7 +1882,7 @@ function processLine(line) {
         '<span class="' + latencyClass(tts) + '">tts ' + tts + 'ms</span>' +
         '<span class="' + latencyClass(total) + '">= ' + total + 'ms</span>';
       if (!meta.parentNode) lastMsgEl.appendChild(meta);
-      scrollBottom();
+      scrollBottomIfPinned(keepPinned);
     }
   }
 }
@@ -1165,34 +1907,17 @@ async function checkProviderKey(provider, key) {
 
 async function preflightStartChecks() {
   const dgEl = document.getElementById('cfg-deepgram');
-  const grEl = document.getElementById('cfg-groq');
   const deepgramKey = ((dgEl && dgEl._getRealValue) ? dgEl._getRealValue() : (currentSettings.deepgram_api_key || '')).trim();
-  const groqKey = ((grEl && grEl._getRealValue) ? grEl._getRealValue() : (currentSettings.groq_api_key || '')).trim();
 
-  if (!deepgramKey) {
-    showToast('Set Deepgram API key first');
-    openSettings();
-    return false;
-  }
-  if (!groqKey) {
-    showToast('Set Groq API key first');
-    openSettings();
-    return false;
-  }
   if (!transcriptOnlyMode && isSameLanguageTranslationPair()) {
     showToast(SAME_LANGUAGE_TRANSLATION_HINT);
     openSettings();
     return false;
   }
 
-  try {
-    const dg = await checkProviderKey('deepgram', deepgramKey);
-    if (!dg.valid) {
-      showToast('Deepgram unavailable (network/key)');
-      return false;
-    }
-  } catch (e) {
-    showToast('Deepgram check failed');
+  if (!deepgramKey) {
+    showToast('Set Deepgram API key first');
+    openSettings();
     return false;
   }
 
@@ -1324,15 +2049,29 @@ function updateTranscriptOnlyButton() {
   const btn = document.getElementById('btn-transcript-only');
   if (!btn) return;
   btn.classList.toggle('on', transcriptOnlyMode);
+  btn.classList.toggle('translation-off', transcriptOnlyMode);
   btn.setAttribute('aria-pressed', transcriptOnlyMode ? 'true' : 'false');
-  let title = transcriptOnlyMode
-    ? 'Translation OFF: original speech only'
-    : 'Translation ON: translated text is shown';
+  let title = transcriptOnlyMode ? TRANSLATION_OFF_HINT : TRANSLATION_ON_HINT;
   if (!transcriptOnlyMode && isSameLanguageTranslationPair()) {
     title = SAME_LANGUAGE_TRANSLATION_HINT;
   }
   btn.title = title;
   btn.setAttribute('aria-label', title);
+}
+
+function updateTranscriptHiddenButton() {
+  const btn = document.getElementById('btn-hide-transcript');
+  if (!btn) return;
+  const title = transcriptHiddenMode ? TRANSCRIPT_HIDDEN_OFF_HINT : TRANSCRIPT_HIDDEN_ON_HINT;
+  btn.classList.toggle('on', transcriptHiddenMode);
+  btn.setAttribute('aria-pressed', transcriptHiddenMode ? 'true' : 'false');
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+}
+
+function updateTranscriptHiddenMode() {
+  chat.classList.toggle('transcript-hidden', transcriptHiddenMode);
+  updateTranscriptHiddenButton();
 }
 
 function getSelectedLanguagePair() {
@@ -1349,13 +2088,42 @@ function isSameLanguageTranslationPair() {
   return Boolean(pair.myLang && pair.myLang === pair.theirLang);
 }
 
-async function persistTextOnlyMode() {
-  const settings = { ...readForm(), text_only_mode: textOnlyMode };
-  await fetch('/api/settings', {
+function applySavedSettings(settings) {
+  currentSettings = settings;
+
+  const myLang = document.getElementById('cfg-my-lang');
+  const theirLang = document.getElementById('cfg-their-lang');
+  const aiAnswerLanguage = document.getElementById('cfg-ai-answer-language');
+  if (myLang && settings.my_language) myLang.value = settings.my_language;
+  if (theirLang && settings.their_language) theirLang.value = settings.their_language;
+  if (aiAnswerLanguage) aiAnswerLanguage.value = settings.ai_answer_language || 'their';
+
+  textOnlyMode = !!settings.text_only_mode;
+  transcriptOnlyMode = !!settings.transcript_only_mode || settings.translation_enabled === false;
+  transcriptHiddenMode = !!settings.transcript_hidden_mode;
+
+  updateTextOnlyButton();
+  updateTranscriptOnlyButton();
+  updateTranscriptHiddenMode();
+}
+
+async function saveSettingsPayload(settings) {
+  const response = await fetch('/api/settings', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(settings)
   });
-  currentSettings = settings;
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to save settings');
+  }
+  const savedSettings = data.settings || settings;
+  applySavedSettings(savedSettings);
+  return savedSettings;
+}
+
+async function persistTextOnlyMode() {
+  const settings = { ...readForm(), text_only_mode: textOnlyMode };
+  await saveSettingsPayload(settings);
 }
 
 async function persistTranscriptOnlyMode() {
@@ -1364,11 +2132,12 @@ async function persistTranscriptOnlyMode() {
     transcript_only_mode: transcriptOnlyMode,
     translation_enabled: !transcriptOnlyMode
   };
-  await fetch('/api/settings', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(settings)
-  });
-  currentSettings = settings;
+  await saveSettingsPayload(settings);
+}
+
+async function persistTranscriptHiddenMode() {
+  const settings = { ...readForm(), transcript_hidden_mode: transcriptHiddenMode };
+  await saveSettingsPayload(settings);
 }
 
 async function applyTextOnlyMode(sendToEngine = true, persist = false) {
@@ -1401,10 +2170,28 @@ async function applyTextOnlyMode(sendToEngine = true, persist = false) {
 
 async function applyTranscriptOnlyMode(sendToEngine = true, persist = false) {
   updateTranscriptOnlyButton();
+  const enablingTranslation = !transcriptOnlyMode;
+  if (persist) {
+    try {
+      await persistTranscriptOnlyMode();
+    } catch (e) {
+      console.warn('Failed to save translation mode:', e);
+    }
+  }
   if (sendToEngine) {
     try {
-      await sendCmd(transcriptOnlyMode ? 'translation_off' : 'translation_on');
-      await syncMonitorAudioMode();
+      if (enablingTranslation && engineRunning && !tabCaptureActive) {
+        const startCmd = getEngineStartCommand();
+        if (startCmd) {
+          await restartPipelinesForCurrentSettings(startCmd);
+        } else {
+          await sendCmd('translation_on');
+          await syncMonitorAudioMode();
+        }
+      } else {
+        await sendCmd(transcriptOnlyMode ? 'translation_off' : 'translation_on');
+        await syncMonitorAudioMode();
+      }
     } catch (e) {
       console.warn('Failed to update translation mode in engine:', e);
     }
@@ -1416,13 +2203,6 @@ async function applyTranscriptOnlyMode(sendToEngine = true, persist = false) {
       await fetch('/api/poll-audio');
     } catch (e) {
       console.warn('Failed to clear queued audio:', e);
-    }
-  }
-  if (persist) {
-    try {
-      await persistTranscriptOnlyMode();
-    } catch (e) {
-      console.warn('Failed to save translation mode:', e);
     }
   }
 }
@@ -1437,6 +2217,20 @@ async function toggleTranscriptOnly() {
   transcriptOnlyMode = !transcriptOnlyMode;
   await applyTranscriptOnlyMode(true, true);
   showToast(transcriptOnlyMode ? 'Translation OFF' : (isSameLanguageTranslationPair() ? SAME_LANGUAGE_TRANSLATION_HINT : 'Translation ON'));
+}
+
+async function toggleTranscriptHidden() {
+  transcriptHiddenMode = !transcriptHiddenMode;
+  updateTranscriptHiddenMode();
+  if (transcriptHiddenMode && aiSuggestionsOpen && allMessages.length) {
+    void fetchAiSuggestions(true);
+  }
+  try {
+    await persistTranscriptHiddenMode();
+  } catch (e) {
+    console.warn('Failed to save transcript visibility mode:', e);
+  }
+  showToast(transcriptHiddenMode ? 'AI Only ON' : 'Transcript visible');
 }
 
 function ensureAudioContext() {
@@ -1616,6 +2410,29 @@ const TAB_UTTERANCE_SILENCE_MS = 2000;
 const DG_LANG_MAP = { pt: 'pt-BR', no: 'nb' };
 function dgLang(code) { return DG_LANG_MAP[code] || code; }
 
+function deepgramKeytermsSupported(lang) {
+  return dgLang(lang || '').split('-')[0].toLowerCase() === 'en';
+}
+
+function appendDeepgramKeyterms(params, lang) {
+  if (!deepgramKeytermsSupported(lang)) {
+    return;
+  }
+
+  let keytermQueryChars = 0;
+
+  for (const term of DEEPGRAM_KEYTERMS) {
+    const encodedTerm = encodeURIComponent(term).replace(/%20/g, '+');
+    const nextLen = KEYTERM_QUERY_PREFIX.length + encodedTerm.length;
+    if (keytermQueryChars + nextLen > MAX_KEYTERM_QUERY_CHARS) {
+      break;
+    }
+
+    params.append('keyterm', term);
+    keytermQueryChars += nextLen;
+  }
+}
+
 function deepgramListenUrl(lang) {
   const params = new URLSearchParams({
     model: 'nova-3',
@@ -1625,6 +2442,7 @@ function deepgramListenUrl(lang) {
     punctuate: 'true',
     smart_format: 'true'
   });
+  appendDeepgramKeyterms(params, lang);
   return 'wss://api.deepgram.com/v1/listen?' + params.toString();
 }
 
@@ -1668,7 +2486,7 @@ async function flushTabTranscript() {
   if (tabFinalFlushTimer) clearTimeout(tabFinalFlushTimer);
   tabFinalFlushTimer = null;
 
-  const text = tabFinalText.trim();
+  const text = normalizeAppSecTerms(tabFinalText);
   tabFinalText = '';
   if (!text) return;
 
@@ -1682,7 +2500,7 @@ async function flushTabTranscript() {
     : (currentSettings.my_language || 'ru');
   processLine('\uD83C\uDFA4 [' + direction + '] ' + text);
   if (transcriptOnlyMode) {
-    processLine('\uD83C\uDF10 [' + direction + '] ' + text);
+    flushPending();
     processLine('\u23F1  stt=0ms trl=0ms tts=0ms');
     return;
   }
@@ -1880,6 +2698,8 @@ function stopTabCapture(showMessage = true) {
 // ===== Engine start/stop =====
 let engineRunning = false;
 let engineToggleBusy = false;
+let pipelineRestartBusy = false;
+let engineStartedAt = 0;
 let timerPaused = true;
 let timerPausedAt = 0;
 let timerOffset = 0;
@@ -1890,10 +2710,15 @@ async function toggleEngine() {
   const btn = document.getElementById('btn-engine');
   const icon = document.getElementById('engine-icon');
   const text = document.getElementById('engine-toggle-text');
+  if (btn) btn.disabled = true;
 
   try {
     const backendState = await syncEngineState();
     if (backendState === 'running' || backendState === 'starting' || tabCaptureActive) {
+      if (Date.now() - engineStartedAt < ENGINE_STOP_GRACE_MS) {
+        showToast('Engine is starting. Wait a few seconds before stopping.');
+        return;
+      }
       if (tabCaptureActive) stopTabCapture(false);
       monitorStartedTabCapture = false;
       monitorStartedEngine = false;
@@ -1911,24 +2736,14 @@ async function toggleEngine() {
     const startCmd = forcedStartCmd || getEngineStartCommand();
     if (!startCmd) {
       await syncEngineState();
-      if (!tabCaptureActive && shouldOfferSystemAudioCapture()) {
-        setMonitorEnabled(true);
-        await ensureAudioContext();
-        monitorStartedTabCapture = true;
-        const started = await startTabCapture();
-        if (!started) {
-          monitorStartedTabCapture = false;
-          setMonitorEnabled(false);
-          await syncMonitorAudioMode();
-        }
-        if (started && tabCaptureActive) {
-          showToast('Monitor capturing browser sound');
-          return;
-        }
-      }
       showToast(tabCaptureActive ? 'Monitor is already capturing browser sound' : getEngineStartBlockedMessage());
       return;
     }
+
+    btn.className = 'btn btn-engine stopped';
+    text.textContent = 'Starting...';
+    icon.innerHTML = '&#8987;';
+    setEnginePill('restarting', 'Starting...');
 
     if (startCmd === 'start_incoming' || startCmd === 'start') {
       await prepareMonitorEngineStart(startCmd);
@@ -1940,11 +2755,6 @@ async function toggleEngine() {
     }
 
     await saveSettings();
-
-    btn.className = 'btn btn-engine stopped';
-    text.textContent = 'Starting...';
-    icon.innerHTML = '&#8987;';
-    setEnginePill('restarting', 'Starting...');
 
     // New session by default; resumed history keeps its call_id and visible transcript.
     if (resumedCallId) {
@@ -1973,6 +2783,7 @@ async function toggleEngine() {
     if ((resp.status || '').startsWith('error:')) {
       throw new Error(resp.status);
     }
+    engineStartedAt = Date.now();
     await sleep(1200);
 
     const finalState = await syncEngineState();
@@ -1990,6 +2801,7 @@ async function toggleEngine() {
     console.error('toggleEngine failed:', e);
   } finally {
     engineToggleBusy = false;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -2016,6 +2828,60 @@ function getEngineStartCommand() {
   if (pipelines[0] === 'outgoing') return 'start_outgoing';
   if (pipelines[0] === 'incoming') return 'start_incoming';
   return '';
+}
+
+function shouldRestartPipelinesAfterMuteChange(previousStartCmd, nextStartCmd) {
+  if (!engineRunning || engineToggleBusy || pipelineRestartBusy || tabCaptureActive) return false;
+  return previousStartCmd !== nextStartCmd;
+}
+
+async function waitForPipelineStop() {
+  for (let attempt = 0; attempt < PIPELINE_RESTART_STOP_POLL_LIMIT; attempt += 1) {
+    const data = await sendCmd('status');
+    const state = normalizeEngineStatus(data.status || '');
+    if (state === 'idle' || state === 'crashed' || state === 'unknown') return state;
+    await sleep(PIPELINE_RESTART_STOP_POLL_DELAY_MS);
+  }
+
+  const data = await sendCmd('status');
+  return normalizeEngineStatus(data.status || '');
+}
+
+async function stopPipelinesForRestart() {
+  browserMonitorPlaybackSynced = null;
+  await sendCmd('stop');
+  await waitForPipelineStop();
+}
+
+async function startPipelinesForCurrentSettings(startCmd) {
+  if (!startCmd) {
+    await syncEngineState();
+    return;
+  }
+
+  if (startCmd === 'start_incoming' || startCmd === 'start') {
+    await prepareMonitorEngineStart(startCmd);
+  } else {
+    await saveSettings();
+  }
+
+  await syncMonitorAudioMode();
+  const resp = await sendCmd(startCmd);
+  if ((resp.status || '').startsWith('error:')) {
+    throw new Error(resp.status);
+  }
+  await sleep(PIPELINE_RESTART_START_SETTLE_MS);
+  await syncEngineState();
+}
+
+async function restartPipelinesForCurrentSettings(startCmd) {
+  pipelineRestartBusy = true;
+  try {
+    await stopPipelinesForRestart();
+    await startPipelinesForCurrentSettings(startCmd);
+  } finally {
+    pipelineRestartBusy = false;
+  }
 }
 
 function isSystemDefaultDevice(name) {
@@ -2058,7 +2924,7 @@ function updateAudioControlAvailability() {
   outLabel.textContent = hasMic ? 'Mic Out' : 'No Mic';
   outBtn.title = hasMic
     ? 'Mute / Unmute your microphone'
-    : 'No physical microphone detected. Start will capture system output loopback if available.';
+    : 'No physical microphone detected. Mic Out requires a physical input device.';
 
   const inBtn = document.getElementById('btn-mic-in');
   if (inBtn) {
@@ -2100,16 +2966,6 @@ function getEngineStartBlockedMessage() {
   return 'No usable audio pipeline selected';
 }
 
-function shouldOfferSystemAudioCapture() {
-  return Boolean(
-    currentSettings.deepgram_api_key &&
-    !tabCaptureActive &&
-    availableAudioOutputs.length === 0 &&
-    navigator.mediaDevices &&
-    navigator.mediaDevices.getDisplayMedia
-  );
-}
-
 async function toggleMute(direction) {
   if (direction === 'outgoing' && !canUseOutgoingMicrophone()) {
     updateAudioControlAvailability();
@@ -2121,12 +2977,24 @@ async function toggleMute(direction) {
 }
 
 async function setDirectionMuted(direction, muted) {
+  const previousStartCmd = getEngineStartCommand();
   muteState[direction] = muted;
   await sendCmd(muted ? 'mute_' + direction : 'unmute_' + direction);
   const btn = document.getElementById(direction === 'outgoing' ? 'btn-mic-out' : 'btn-mic-in');
   if (btn) btn.className = muted ? 'btn muted' : 'btn active';
   updateAudioControlAvailability();
   updateMonitorButton();
+
+  const nextStartCmd = getEngineStartCommand();
+  if (!shouldRestartPipelinesAfterMuteChange(previousStartCmd, nextStartCmd)) return;
+
+  try {
+    await restartPipelinesForCurrentSettings(nextStartCmd);
+  } catch (e) {
+    await syncEngineState();
+    showToast('Audio route update failed');
+    console.error('Failed to restart audio routes after mute change:', e);
+  }
 }
 
 function clearAll() {
@@ -2159,15 +3027,19 @@ function toggleSection(id) {
 function populateForm(s) {
   const dg = document.getElementById('cfg-deepgram');
   const gr = document.getElementById('cfg-groq');
+  const grBackup = document.getElementById('cfg-groq-backup');
   const aiProvider = document.getElementById('cfg-ai-provider');
   const codexEnabled = document.getElementById('cfg-codex-enabled');
   const codexModel = document.getElementById('cfg-codex-model');
   const or = document.getElementById('cfg-openrouter');
+  const gemini = document.getElementById('cfg-gemini');
   const ttsProvider = document.getElementById('cfg-tts-provider');
   if (dg._setRealValue) dg._setRealValue(s.deepgram_api_key || '');
   else dg.value = s.deepgram_api_key || '';
   if (gr._setRealValue) gr._setRealValue(s.groq_api_key || '');
   else gr.value = s.groq_api_key || '';
+  if (grBackup?._setRealValue) grBackup._setRealValue(s.backup_groq_api_key || '');
+  else if (grBackup) grBackup.value = s.backup_groq_api_key || '';
   if (aiProvider) aiProvider.value = s.ai_provider || 'codex';
   if (codexEnabled) codexEnabled.checked = s.codex_enabled !== false;
   if (codexModel) codexModel.value = s.codex_model || 'gpt-5.4';
@@ -2175,16 +3047,28 @@ function populateForm(s) {
   else or.value = s.openrouter_api_key || '';
   const orModel = document.getElementById('cfg-openrouter-model');
   if (orModel) orModel.value = s.openrouter_model || 'openrouter/auto';
+  if (gemini?._setRealValue) gemini._setRealValue(s.gemini_api_key || '');
+  else if (gemini) gemini.value = s.gemini_api_key || '';
+  const geminiModel = document.getElementById('cfg-gemini-model');
+  if (geminiModel) geminiModel.value = s.gemini_model || 'gemini-3.5-flash';
+  const antigravityUrl = document.getElementById('cfg-antigravity-url');
+  if (antigravityUrl) antigravityUrl.value = s.antigravity_chat_url || 'http://127.0.0.1:8045/v1/chat/completions';
   textOnlyMode = !!s.text_only_mode;
   transcriptOnlyMode = !!s.transcript_only_mode || s.translation_enabled === false;
+  transcriptHiddenMode = !!s.transcript_hidden_mode;
   if (ttsProvider) ttsProvider.value = s.tts_provider || 'piper';
   if (!s.deepgram_api_key && s._deepgram_from_env) dg.placeholder = 'Set via .env file';
   if (!s.groq_api_key && s._groq_from_env) gr.placeholder = 'Set via .env file';
+  if (grBackup && !s.backup_groq_api_key && s._backup_groq_from_env) grBackup.placeholder = 'Set via .env file';
   if (!s.openrouter_api_key && s._openrouter_from_env) or.placeholder = 'Set via .env file';
+  if (gemini && !s.gemini_api_key && s._gemini_from_env) gemini.placeholder = 'Set via .env file';
   document.getElementById('cfg-my-lang').value = s.my_language || 'en';
   document.getElementById('cfg-their-lang').value = s.their_language || 'en';
+  const aiAnswerLanguage = document.getElementById('cfg-ai-answer-language');
+  if (aiAnswerLanguage) aiAnswerLanguage.value = s.ai_answer_language || 'their';
   updateTextOnlyButton();
   updateTranscriptOnlyButton();
+  updateTranscriptHiddenMode();
   updateMonitorButton();
   document.getElementById('cfg-endpointing').value = s.endpointing_ms || 700;
   document.getElementById('endpointing-val').textContent = (s.endpointing_ms || 700) + 'ms';
@@ -2201,16 +3085,21 @@ function readForm() {
   return {
     deepgram_api_key: (document.getElementById('cfg-deepgram')._getRealValue || (() => document.getElementById('cfg-deepgram').value))().trim(),
     groq_api_key: (document.getElementById('cfg-groq')._getRealValue || (() => document.getElementById('cfg-groq').value))().trim(),
+    backup_groq_api_key: (document.getElementById('cfg-groq-backup')._getRealValue || (() => document.getElementById('cfg-groq-backup').value))().trim(),
     ai_provider: document.getElementById('cfg-ai-provider')?.value || 'codex',
     codex_enabled: document.getElementById('cfg-codex-enabled')?.checked !== false,
     codex_model: (document.getElementById('cfg-codex-model')?.value || 'gpt-5.4').trim(),
     openrouter_api_key: (document.getElementById('cfg-openrouter')._getRealValue || (() => document.getElementById('cfg-openrouter').value))().trim(),
     openrouter_model: (document.getElementById('cfg-openrouter-model')?.value || 'openrouter/auto').trim(),
+    gemini_api_key: (document.getElementById('cfg-gemini')._getRealValue || (() => document.getElementById('cfg-gemini').value))().trim(),
+    gemini_model: (document.getElementById('cfg-gemini-model')?.value || 'gemini-3.5-flash').trim(),
+    antigravity_chat_url: (document.getElementById('cfg-antigravity-url')?.value || 'http://127.0.0.1:8045/v1/chat/completions').trim(),
     ai_resume_prompt: clipPromptText(currentSettings.ai_resume_prompt || ''),
     ai_vacancy_prompt: clipPromptText(currentSettings.ai_vacancy_prompt || ''),
     tts_provider: document.getElementById('cfg-tts-provider')?.value || 'piper',
     my_language: document.getElementById('cfg-my-lang').value,
     their_language: document.getElementById('cfg-their-lang').value,
+    ai_answer_language: document.getElementById('cfg-ai-answer-language')?.value || 'their',
     tts_outgoing_voice: document.getElementById('cfg-voice-out').value,
     tts_incoming_voice: document.getElementById('cfg-voice-in').value,
     mic_device: document.getElementById('cfg-mic').value || 'default',
@@ -2220,6 +3109,7 @@ function readForm() {
     endpointing_ms: parseInt(document.getElementById('cfg-endpointing').value),
     text_only_mode: textOnlyMode,
     transcript_only_mode: transcriptOnlyMode,
+    transcript_hidden_mode: transcriptHiddenMode,
     translation_enabled: !transcriptOnlyMode,
   };
 }
@@ -2316,15 +3206,19 @@ async function testKey(provider, triggerBtn = null) {
   const inputIds = {
     deepgram: 'cfg-deepgram',
     groq: 'cfg-groq',
+    groq_backup: 'cfg-groq-backup',
     codex: null,
     openrouter: 'cfg-openrouter',
+    gemini: 'cfg-gemini',
     auto: null,
   };
   const btnIds = {
     deepgram: 'test-deepgram',
     groq: 'test-groq',
+    groq_backup: 'test-groq-backup',
     codex: 'test-codex',
     openrouter: 'test-openrouter',
+    gemini: 'test-gemini',
     auto: null,
   };
   const inputId = inputIds[provider];
@@ -2338,12 +3232,20 @@ async function testKey(provider, triggerBtn = null) {
 
   const codexModel = (document.getElementById('cfg-codex-model')?.value || 'gpt-5.4').trim();
   const openrouterModel = (document.getElementById('cfg-openrouter-model')?.value || 'openrouter/auto').trim();
+  const geminiModel = (document.getElementById('cfg-gemini-model')?.value || 'gemini-3.5-flash').trim();
+  const antigravityChatUrl = (document.getElementById('cfg-antigravity-url')?.value || 'http://127.0.0.1:8045/v1/chat/completions').trim();
   const payload = { provider, key };
   if (provider === 'codex') payload.model = codexModel;
   if (provider === 'openrouter') payload.model = openrouterModel;
+  if (provider === 'gemini') {
+    payload.model = geminiModel;
+    payload.antigravity_chat_url = antigravityChatUrl;
+  }
   if (provider === 'auto') {
     payload.codex_model = codexModel;
     payload.openrouter_model = openrouterModel;
+    payload.gemini_model = geminiModel;
+    payload.antigravity_chat_url = antigravityChatUrl;
   }
 
   btn.textContent = '...';
@@ -3036,7 +3938,10 @@ function normalizeDeviceName(name) {
 
 function pickPreferredDevice(devices, current, preferred) {
   if (current && current !== 'default' && devices.includes(current)) return current;
+  return pickPreferredDeviceOnly(devices, preferred) || (current && current === 'default' ? current : 'default');
+}
 
+function pickPreferredDeviceOnly(devices, preferred) {
   const normalizedDevices = devices.map(device => ({
     raw: device,
     normalized: normalizeDeviceName(device)
@@ -3056,17 +3961,22 @@ function pickPreferredDevice(devices, current, preferred) {
     if (partial) return partial.raw;
   }
 
-  return current && current === 'default' ? current : 'default';
+  return '';
+}
+
+function pickAvailableOutputDevice(devices, current) {
+  if (!current || isSystemDefaultDevice(current)) return 'default';
+  return devices.includes(current) ? current : 'default';
 }
 
 function pickCallCaptureDevice(inputDevices, outputDevices, current) {
   if (isSystemLoopbackDevice(current) && outputDevices.length > 0) return SYSTEM_LOOPBACK_DEVICE;
-  if (current && current !== 'default' && inputDevices.includes(current)) return current;
 
-  const preferred = pickPreferredDevice(inputDevices, current, PREFERRED_CALL_CAPTURE_DEVICES);
-  if (preferred !== 'default') return preferred;
+  const preferred = pickPreferredDeviceOnly(inputDevices, PREFERRED_CALL_CAPTURE_DEVICES);
+  if (preferred) return preferred;
 
   if (outputDevices.length > 0) return SYSTEM_LOOPBACK_DEVICE;
+  if (current && current !== 'default' && inputDevices.includes(current)) return current;
   return 'default';
 }
 
@@ -3120,16 +4030,90 @@ async function loadDevices() {
       currentSettings.meet_output_device,
       PREFERRED_CALL_PLAYBACK_DEVICES
     );
+    const speakerDevice = pickAvailableOutputDevice(outputDevs, currentSettings.speaker_device);
     currentSettings.meet_input_device = callCaptureDevice;
     currentSettings.meet_output_device = callPlaybackDevice;
+    currentSettings.speaker_device = speakerDevice;
 
     fillSelect('cfg-mic', inputDevs, currentSettings.mic_device);
-    fillSelect('cfg-speaker', outputDevs, currentSettings.speaker_device);
+    fillSelect('cfg-speaker', outputDevs, speakerDevice);
     fillSelect('cfg-call-input', outputDevs, callPlaybackDevice);
     fillSelect('cfg-call-output', inputDevs, callCaptureDevice, { includeLoopback: outputDevs.length > 0 });
     updateAudioControlAvailability();
     updateMonitorButton();
   } catch(e) { console.error('Failed to load devices', e); }
+}
+
+function deviceSignature(inputs, outputs) {
+  return JSON.stringify({
+    input: [...inputs].sort(),
+    output: [...outputs].sort()
+  });
+}
+
+function isIncomingLoopbackRouteSelected() {
+  const callCapture = document.getElementById('cfg-call-output')?.value || currentSettings.meet_input_device || 'default';
+  return Boolean(!muteState.incoming && !tabCaptureActive && isSystemLoopbackDevice(callCapture));
+}
+
+async function recoverAudioRouteAfterHotplug(reason) {
+  if (!engineRunning || tabCaptureActive || !isIncomingLoopbackRouteSelected()) return;
+  if (availableAudioOutputs.length === 0) {
+    await stopPipelinesForRestart();
+    await syncEngineState();
+    showToast('Audio output device lost. Connect headphones/speakers or use Monitor.');
+    return;
+  }
+
+  const startCmd = getEngineStartCommand();
+  if (!startCmd) {
+    await stopPipelinesForRestart();
+    await syncEngineState();
+    showToast('Audio route unavailable after device change.');
+    return;
+  }
+
+  await saveSettings();
+  await restartPipelinesForCurrentSettings(startCmd);
+  showToast(reason === 'native'
+    ? 'Audio device recovered; capture restarted'
+    : 'Audio device changed; capture restarted');
+}
+
+async function checkAudioDeviceHotplug(reason = 'poll') {
+  if (reason === 'poll' && !engineRunning && !tabCaptureActive) return;
+  if (audioHotplugBusy) return;
+  audioHotplugBusy = true;
+  try {
+    const previousSignature = audioDeviceSignature || deviceSignature(availableAudioInputs, availableAudioOutputs);
+    await loadDevices();
+    const nextSignature = deviceSignature(availableAudioInputs, availableAudioOutputs);
+    if (!audioDeviceSignature) {
+      audioDeviceSignature = nextSignature;
+      return;
+    }
+    if (reason !== 'native' && previousSignature === nextSignature) return;
+    audioDeviceSignature = nextSignature;
+    await recoverAudioRouteAfterHotplug(reason);
+  } catch (e) {
+    console.warn('Audio hotplug recovery failed:', e);
+    showToast('Audio device recovery failed');
+  } finally {
+    audioHotplugBusy = false;
+  }
+}
+
+function startAudioDeviceWatcher() {
+  audioDeviceSignature = deviceSignature(availableAudioInputs, availableAudioOutputs);
+  if (!audioDeviceWatchTimer) {
+    audioDeviceWatchTimer = setInterval(
+      () => checkAudioDeviceHotplug('poll'),
+      AUDIO_DEVICE_WATCH_INTERVAL_MS
+    );
+  }
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', () => checkAudioDeviceHotplug('devicechange'));
+  }
 }
 
 // Load settings from server
@@ -3147,11 +4131,7 @@ async function loadSettings() {
 // Save settings to server
 async function saveSettings() {
   const settings = readForm();
-  await fetch('/api/settings', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(settings)
-  });
-  currentSettings = settings;
+  await saveSettingsPayload(settings);
 }
 
 // ===== Engine Restart =====
@@ -3165,16 +4145,21 @@ async function saveAndRestart() {
   const btn = document.getElementById('restart-btn');
   const txt = document.getElementById('restart-text');
   const bar = document.getElementById('restart-progress');
+  let restartStartCmd = '';
 
   btn.classList.add('restarting');
   btn.classList.remove('success', 'error');
 
   try {
+    const backendState = await syncEngineState();
+    const shouldResumePipelines = backendState === 'running' || backendState === 'starting';
+
     // Stage 1: Save
     txt.textContent = 'Saving settings...';
     bar.style.width = '15%';
     setEnginePill('restarting', 'Saving...');
     await saveSettings();
+    restartStartCmd = shouldResumePipelines ? getEngineStartCommand() : '';
     await sleep(300);
 
     // Stage 2: Restart
@@ -3202,10 +4187,17 @@ async function saveAndRestart() {
       } catch(e) {}
     }
 
-    // Stage 4: Starting pipelines
-    txt.textContent = 'Starting pipelines...';
+    // Stage 4: Resume pipelines when the engine was running before restart.
+    txt.textContent = restartStartCmd ? 'Starting pipelines...' : 'Finalizing...';
     bar.style.width = '95%';
-    await sleep(1000);
+    await syncEngineState();
+    if (restartStartCmd) {
+      await startPipelinesForCurrentSettings(restartStartCmd);
+      engineStartedAt = Date.now();
+    } else {
+      await sleep(1000);
+      await syncEngineState();
+    }
 
     // Done!
     bar.style.width = '100%';
@@ -3213,7 +4205,7 @@ async function saveAndRestart() {
     btn.classList.add('success');
     txt.innerHTML = '&#10003; Ready!';
     await syncEngineState();
-    showToast('Engine restarted');
+    showToast(restartStartCmd ? 'Engine restarted and capture resumed' : 'Engine restarted');
 
     await sleep(2500);
     btn.classList.remove('success');
@@ -3273,10 +4265,11 @@ async function waitForEngine() {
   updatePromptButtons();
   updateAudioControlAvailability();
   updateMonitorButton();
+  startAudioDeviceWatcher();
   await loadResumedCallFromUrl();
 
   // Auto-open settings if no API keys configured
-  if (!currentSettings.deepgram_api_key && !currentSettings.groq_api_key) {
+  if (!currentSettings.deepgram_api_key && !currentSettings.groq_api_key && !currentSettings.backup_groq_api_key) {
     openSettings();
   }
   aiSuggestionsOpen = true;

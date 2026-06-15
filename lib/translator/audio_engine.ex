@@ -582,6 +582,16 @@ defmodule Translator.AudioEngine do
     %{state | status: next_status, pipelines: pipelines}
   end
 
+  defp dispatch_event(
+         %{"event" => "audio_device_lost", "direction" => direction, "message" => message},
+         state
+       ) do
+    line = "⚠ Audio device lost [#{speaker_label(direction)} #{direction}]: #{message}"
+    Logger.warning(line)
+    log_to_file(line)
+    state
+  end
+
   defp dispatch_event(%{"event" => "log", "level" => level, "message" => message}, state) do
     case level do
       "debug" -> Logger.debug("Engine: #{message}")
@@ -595,6 +605,7 @@ defmodule Translator.AudioEngine do
   end
 
   defp dispatch_event(%{"event" => "device_list", "input" => input, "output" => output}, state) do
+    next_devices = %{"input" => input, "output" => output}
     loopback_note =
       if :os.type() |> elem(0) == :win32 and length(output) > 0 do
         " (system output loopback available)"
@@ -602,11 +613,13 @@ defmodule Translator.AudioEngine do
         ""
       end
 
-    Logger.info(
-      "Received device list: #{length(input)} physical input, #{length(output)} output#{loopback_note}"
-    )
+    if next_devices != state.devices do
+      Logger.info(
+        "Received device list: #{length(input)} physical input, #{length(output)} output#{loopback_note}"
+      )
+    end
 
-    %{state | devices: %{"input" => input, "output" => output}}
+    %{state | devices: next_devices}
   end
 
   defp dispatch_event(

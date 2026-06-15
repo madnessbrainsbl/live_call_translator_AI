@@ -532,6 +532,18 @@ impl Engine {
 
     fn apply_config(&mut self, key: &str, value: &serde_json::Value) {
         match key {
+            CONFIG_MY_LANGUAGE => {
+                if let Some(v) = json_string(value) {
+                    self.config.my_language = v;
+                    info!("My language: {}", self.config.my_language);
+                }
+            }
+            CONFIG_THEIR_LANGUAGE => {
+                if let Some(v) = json_string(value) {
+                    self.config.their_language = v;
+                    info!("Their language: {}", self.config.their_language);
+                }
+            }
             CONFIG_ENDPOINTING_MS => {
                 if let Some(v) = json_u32(value) {
                     self.config.endpointing_ms = v;
@@ -553,6 +565,18 @@ impl Engine {
                 self.config.tts_enabled = enabled;
                 self.tts_enabled.store(enabled, Ordering::SeqCst);
                 info!("TTS enabled: {}", enabled);
+            }
+            CONFIG_TEXT_ONLY_MODE => {
+                let enabled = !value.as_bool().unwrap_or(false);
+                self.config.tts_enabled = enabled;
+                self.tts_enabled.store(enabled, Ordering::SeqCst);
+                info!("TTS enabled: {}", enabled);
+            }
+            CONFIG_TRANSCRIPT_ONLY_MODE => {
+                let enabled = !value.as_bool().unwrap_or(false);
+                self.config.translation_enabled = enabled;
+                self.translation_enabled.store(enabled, Ordering::SeqCst);
+                info!("Translation enabled: {}", enabled);
             }
             CONFIG_TRANSLATION_ENABLED => {
                 let enabled = value.as_bool().unwrap_or(true);
@@ -864,18 +888,19 @@ fn run_pipeline(
 
     let (audio_tx, audio_rx) = bounded::<AudioChunk>(512);
     let (playback_tx, playback_rx) = bounded::<Vec<f32>>(64);
+    let (device_error_tx, device_error_rx) = bounded::<String>(8);
     // Transcripts go here; the processor thread picks them up without blocking audio.
     let (proc_tx, proc_rx) = bounded::<(String, u64)>(16);
 
     let capture = if is_system_loopback_device(capture_device) {
-        AudioCapture::new_loopback(loopback_output_device, audio_tx)
+        AudioCapture::new_loopback(loopback_output_device, audio_tx, device_error_tx.clone())
     } else {
-        AudioCapture::new(capture_device, audio_tx)
+        AudioCapture::new(capture_device, audio_tx, device_error_tx.clone())
     }
     .with_context(|| format!("[{}] Failed to create AudioCapture", direction))?;
     let capture_rate = capture.sample_rate();
 
-    let playback = AudioPlayback::new(playback_device, sample_rate, playback_rx)
+    let playback = AudioPlayback::new(playback_device, sample_rate, playback_rx, device_error_tx)
         .with_context(|| format!("[{}] Failed to create AudioPlayback", direction))?;
 
     // Connect to Deepgram — stream at 16kHz to save bandwidth
@@ -971,6 +996,13 @@ fn run_pipeline(
             info!("[{}] Stop flag set, exiting", direction);
             break;
         }
+        if let Ok(device_error) = device_error_rx.try_recv() {
+            let _ = event_tx.send(Event::AudioDeviceLost {
+                direction: direction.to_string(),
+                message: device_error,
+            });
+            break;
+        }
 
         match audio_rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(chunk) => {
@@ -981,15 +1013,6 @@ fn run_pipeline(
                         &chunk.samples,
                         &mut audio_drop_debug_at,
                     );
-                    if !ensure_deepgram_keepalive(
-                        direction,
-                        &stt,
-                        stt_sample_rate,
-                        event_tx,
-                        &mut session,
-                    ) {
-                        break;
-                    }
                     continue;
                 }
                 note_incoming_audio_activity(
@@ -1061,6 +1084,9 @@ fn run_pipeline(
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                if stop_flag.load(Ordering::SeqCst) || mute_flag.load(Ordering::Relaxed) {
+                    continue;
+                }
                 if !ensure_deepgram_keepalive(
                     direction,
                     &stt,
@@ -1257,7 +1283,6 @@ fn drop_requires_keepalive(reason: AudioDropReason) -> bool {
         reason,
         AudioDropReason::EchoSuppressed
             | AudioDropReason::IncomingActive
-            | AudioDropReason::Muted
             | AudioDropReason::QuietOutgoing
     )
 }
@@ -1287,12 +1312,19 @@ fn debug_audio_drop(
 }
 
 fn is_reconnectable_deepgram_error(error: &anyhow::Error) -> bool {
-    let message = format!("{:#}", error).to_ascii_lowercase();
+    let message = format!("{:#}", error).to_lowercase();
     message.contains("connection closed")
         || message.contains("already closed")
         || message.contains("reset without closing handshake")
         || message.contains("connection reset")
         || message.contains("broken pipe")
+        || message.contains("os error 10053")
+        || message.contains("os error 10054")
+        || message.contains("10053")
+        || message.contains("10054")
+        || message.contains("was aborted")
+        || message.contains("разорвала установленное подключение")
+        || message.contains("принудительно разорвал существующее подключение")
 }
 
 fn ensure_deepgram_keepalive(
@@ -2133,8 +2165,28 @@ mod tests {
 
     #[test]
     fn gated_drop_requires_keepalive() {
+        assert!(drop_requires_keepalive(AudioDropReason::EchoSuppressed));
         assert!(drop_requires_keepalive(AudioDropReason::IncomingActive));
         assert!(drop_requires_keepalive(AudioDropReason::QuietOutgoing));
+        assert!(!drop_requires_keepalive(AudioDropReason::Muted));
+    }
+
+    #[test]
+    fn windows_socket_abort_is_reconnectable_deepgram_error() {
+        let error = anyhow::anyhow!(
+            "Failed to send Deepgram keepalive: IO error: An established connection was aborted by the software in your host machine. (os error 10053)"
+        );
+
+        assert!(is_reconnectable_deepgram_error(&error));
+    }
+
+    #[test]
+    fn windows_remote_host_close_is_reconnectable_deepgram_error() {
+        let error = anyhow::anyhow!(
+            "Deepgram WebSocket error: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)"
+        );
+
+        assert!(is_reconnectable_deepgram_error(&error));
     }
 
     #[test]
